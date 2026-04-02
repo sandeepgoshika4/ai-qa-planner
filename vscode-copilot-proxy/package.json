@@ -1,0 +1,27 @@
+{
+  "name": "copilot-llm-proxy",
+  "displayName": "Copilot LLM Proxy",
+  "description": "Bridges standalone Node scripts to VS Code Copilot language models via a local HTTP server",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "copilot-llm-proxy.status",
+        "title": "Copilot LLM Proxy: Show Status"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -watch -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.8.2"
+  }
+}

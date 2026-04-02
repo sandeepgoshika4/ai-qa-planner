@@ -1,0 +1,22 @@
+{
+  "name": "xray-playwright-agent-followup",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "fetch:xray": "tsx src/tools/fetchFromXray.ts",
+    "approve:upload": "tsx src/tools/approvePendingUpload.ts",
+    "generate:steps": "tsx src/tools/generateManualSteps.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "openai": "^4.103.0",
+    "playwright": "^1.53.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.2"
+  }
+}

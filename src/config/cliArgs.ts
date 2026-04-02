@@ -1,0 +1,23 @@
+export interface CliOptions {
+  file?: string;
+  xrayIssue?: string;
+  xrayJql?: string;
+  resume?: string;
+  approvePending?: string;
+  rejectPending?: string;
+  recordingFile?: string;
+}
+export function parseCliArgs(argv: string[]): CliOptions {
+  const out: CliOptions = {};
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i], next = argv[i+1];
+    if (arg === "--file") out.file = next;
+    if (arg === "--xray-issue") out.xrayIssue = next;
+    if (arg === "--xray-jql") out.xrayJql = next;
+    if (arg === "--resume") out.resume = next;
+    if (arg === "--approve") out.approvePending = next;
+    if (arg === "--reject") out.rejectPending = next;
+    if (!arg.startsWith("--") && !out.recordingFile) out.recordingFile = arg;
+  }
+  return out;
+}

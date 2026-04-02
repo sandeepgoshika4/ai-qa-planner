@@ -1,0 +1,24 @@
+{
+  "testCaseKey": "LOCAL-2",
+  "testName": "Search for a term in Google",
+  "description": "Manual-style test case similar to Jira/Xray test steps.",
+  "startUrl": "https://www.google.com",
+  "dataSet": {
+    "url": "https://www.google.com"
+  },
+  "steps": [
+    {
+      "id": "1",
+      "action": "Search for a Latest Netflix Series in Google Search",
+      "data": "",
+      "expectedResult": "User should be able to see search and click on button Search"
+    },
+    {
+      "id": "2",
+      "action": "Should see search results for the latest Netflix series",
+      "data": "",
+      "expectedResult": "User should be able to see search results"
+    }
+  ],
+  "source": "json"
+}

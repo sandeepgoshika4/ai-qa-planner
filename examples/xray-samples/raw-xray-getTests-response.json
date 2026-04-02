@@ -1,0 +1,25 @@
+{
+  "data": {
+    "getTests": {
+      "total": 1,
+      "results": [
+        {
+          "issueId": "10001",
+          "jira": {
+            "key": "DOCS-101",
+            "summary": "Login and open Contact Information",
+            "description": "Validate user can log in and reach Contact Information."
+          },
+          "steps": [
+            {
+              "id": "1",
+              "action": "Login into www.docs.google.com and click 'Contact Information'",
+              "data": "",
+              "result": "User should be able to login and able to click 'Contact Information'"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

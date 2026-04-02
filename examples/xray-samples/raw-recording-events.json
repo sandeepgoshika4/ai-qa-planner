@@ -1,0 +1,22 @@
+[
+  {
+    "at": "2026-03-13T20:00:00.000Z",
+    "type": "navigate",
+    "url": "https://docs.google.com",
+    "title": "Google Docs",
+    "details": {}
+  },
+  {
+    "at": "2026-03-13T20:00:05.000Z",
+    "type": "click",
+    "url": "https://docs.google.com",
+    "title": "Google Docs",
+    "details": {
+      "text": "Contact Information",
+      "tag": "A",
+      "id": "",
+      "name": "",
+      "ariaLabel": ""
+    }
+  }
+]
