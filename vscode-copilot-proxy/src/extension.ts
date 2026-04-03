@@ -10,6 +10,10 @@ function resolveFamily(model: string): string {
   const lower = model.toLowerCase();
   if (lower.includes("opus")) return "claude-opus-4-6";
   if (lower.includes("sonnet")) return "claude-sonnet-4-6";
+  if (lower.includes("haiku")) return "claude-haiku-4.5";
+  if (lower.includes("gpt-4o")) return "gpt-4o";
+  if (lower.includes("gpt-5")) return "gpt-5-mini";
+  if (lower.includes("copilot-fast")) return "copilot-fast";
   // Pass everything else (gpt-5.x, etc.) through as-is
   return model;
 }
@@ -70,15 +74,20 @@ async function handleRequest(
     return;
   }
 
-  const { model = "claude-sonnet-4-6", messages = [] } = payload;
+  const { model = "gpt-5", messages = [] } = payload;
   const family = resolveFamily(model);
 
   const candidates = await vscode.lm.selectChatModels({ vendor: "copilot", family });
   const lmModel = candidates[0];
 
   if (!lmModel) {
+    // Log all available models for debugging
+    const allModels = await vscode.lm.selectChatModels({ vendor: "copilot" });
+    const availableFamilies = allModels.map((m) => m.family).join(", ");
+    const errorMsg = `No Copilot model found for family "${family}". Available families: ${availableFamilies || "none"}`;
+    console.error(errorMsg);
     res.writeHead(503, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: `No Copilot model found for family "${family}". Available models may differ — check vscode.lm.selectChatModels() output.` }));
+    res.end(JSON.stringify({ error: errorMsg }));
     return;
   }
 
