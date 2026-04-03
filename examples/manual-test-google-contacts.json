@@ -11,7 +11,7 @@
   "steps": [
     {
       "id": "1",
-      "action": "Login into www.docs.google.com and with Username 'YOUR_GOOGLE_EMAIL' and click next",
+      "action": "Login into www.docs.google.com with your username and click next",
       "data": "",
       "expectedResult": "User should be able to enter username and click next button to enter password page"
     }

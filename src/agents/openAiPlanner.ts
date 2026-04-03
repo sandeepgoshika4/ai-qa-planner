@@ -1,23 +1,12 @@
-import OpenAI from "openai";
 import { env } from "../config/env.js";
+import { makeLlmClient } from "../llm/client.js";
 import { buildStepPlanningPrompt } from "../prompts/stepPlanningPrompt.js";
 import type { ManualTestStep } from "../types/manualTest.js";
 import type { PageContext } from "../types/pageContext.js";
 import type { StepPlan } from "../types/planner.js";
 
-function makeClient(): OpenAI {
-  if (env.llmProxyUrl) {
-    return new OpenAI({ apiKey: "copilot", baseURL: env.llmProxyUrl });
-  }
-  if (!env.openAiApiKey) throw new Error("Either LLM_PROXY_URL or OPENAI_API_KEY must be set");
-  return new OpenAI({ apiKey: env.openAiApiKey });
-}
-
 export class OpenAiPlanner {
-  private client: OpenAI;
-  constructor() {
-    this.client = makeClient();
-  }
+  private client = makeLlmClient();
 
   async planStep(step: ManualTestStep, page: PageContext, dataSet: Record<string, string>): Promise<StepPlan> {
     const response = await this.client.chat.completions.create({

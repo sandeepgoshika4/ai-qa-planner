@@ -1,19 +1,8 @@
-import OpenAI from "openai";
 import { env } from "../config/env.js";
-
-function makeClient(): OpenAI {
-  if (env.llmProxyUrl) {
-    return new OpenAI({ apiKey: "copilot", baseURL: env.llmProxyUrl });
-  }
-  if (!env.openAiApiKey) throw new Error("Either LLM_PROXY_URL or OPENAI_API_KEY must be set");
-  return new OpenAI({ apiKey: env.openAiApiKey });
-}
+import { makeLlmClient } from "../llm/client.js";
 
 export class StepGeneratorAgent {
-  private client: OpenAI;
-  constructor() {
-    this.client = makeClient();
-  }
+  private client = makeLlmClient();
 
   async generateManualSteps(rawEvents: unknown): Promise<string> {
     const response = await this.client.chat.completions.create({

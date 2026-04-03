@@ -1,16 +1,15 @@
 import { Page } from "playwright";
 import { RunState } from "../types/run.js";
 import { saveRunState } from "../storage/runStateStore.js";
-import { persistArtifacts } from "../runner.js";
+import { PageContextWatcher } from "../browser/pageContextWatcher.js";
 import { logInfo, logWarn } from "../utils/logger.js";
 import { prompt } from "../utils/cli.js";
-import { extractPageContext } from "../browser/extractor.js";
 import { waitForManualVerificationToComplete } from "./waitForManualVerificationToComplete.js";
 
 export async function handleManualVerificationPause(
     page: Page,
     state: RunState,
-    artifactDir: string,
+    watcher: PageContextWatcher,
     stepIndex: number,
     step: { id: string; action: string },
     startedAt: string,
@@ -24,16 +23,9 @@ export async function handleManualVerificationPause(
     state.paused = true;
     saveRunState(state);
 
-    const beforeContext = await extractPageContext(page);
     state.stepResults.push(
-        await persistArtifacts(
-            page,
-            artifactDir,
-            stepIndex,
-            step.id,
-            step.action,
+        await watcher.captureStep(
             "MANUAL_REQUIRED",
-            beforeContext,
             `Manual verification required: ${reason}`,
             startedAt
         )
