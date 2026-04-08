@@ -14,49 +14,44 @@ const log = (msg: string): void => { if (env.watcherLogging) logInfo(msg); };
 // ─── Public types ──────────────────────────────────────────────────────────────
 
 /**
- * Describes what changed between two page-context snapshots during a step.
+ * Emitted once per step after the page has fully settled —
+ * compares the final page state against the state captured at `setStep()`.
  */
 export interface PageContextChange {
-  /** Zero-based index of the step currently executing. */
+  /** Zero-based index of the step that was executing. */
   stepIndex: number;
   /** The step that was active when the change was detected. */
   step: ManualTestStep;
-  /** Context snapshot captured just before this change. */
-  previousContext: PageContext;
-  /** Freshly extracted context after the change was detected. */
-  currentContext: PageContext;
-  /** Which top-level fields actually differ between the two snapshots. */
+  /**
+   * Context snapshot taken at the moment `setStep()` was called
+   * (i.e. the page state before the step's actions ran).
+   */
+  initialContext: PageContext;
+  /**
+   * Context snapshot taken after the page stopped loading
+   * (i.e. the page state once all navigations finished).
+   */
+  finalContext: PageContext;
+  /** Which top-level fields differ between initial and final snapshots. */
   changedFields: Array<"url" | "title" | "elements">;
-  /**
-   * What triggered the check:
-   * - `"navigation"` – main-frame URL changed (`framenavigated` event)
-   * - `"load"`       – page finished loading (`load` event)
-   */
-  trigger: "navigation" | "load";
-  /** ISO-8601 timestamp of when the change was detected. */
+  /** ISO-8601 timestamp of when the settled snapshot was taken. */
   at: string;
-  /**
-   * Paths of the intermediate artifacts automatically saved for this change.
-   * Only present when `artifactDir` was supplied to the constructor.
-   */
-  artifacts?: { screenshotPath: string; contextPath: string; domPath: string };
+  /** Artifact files saved for this change. */
+  artifacts: { screenshotPath: string; contextPath: string; domPath: string };
 }
 
-/** Callback invoked whenever a meaningful page-context change is detected. */
+/** Callback invoked once per step after the page has settled. */
 export type ContextChangeHandler = (change: PageContextChange) => void | Promise<void>;
 
 // ─── Watcher ──────────────────────────────────────────────────────────────────
 
 /**
- * Attaches lightweight Playwright event listeners to a `Page` and:
+ * Listens for page load/navigation events during step execution and emits
+ * **one** {@link PageContextChange} per step — fired after the page has been
+ * quiet for `WATCHER_SETTLE_MS` (default 800 ms).
  *
- * 1. **Auto-saves intermediate artifacts** (screenshot + context JSON + DOM HTML)
- *    on every meaningful page-context change during step execution.
- *
- * 2. **Produces the final `StepResult`** via {@link captureStep} — takes a
- *    fresh context snapshot, writes the canonical `step-N.*` artifact files,
- *    and assembles the complete result object so `runner.ts` never has to touch
- *    the file-system directly.
+ * The change compares the **final settled state** against the **initial state
+ * captured at `setStep()`**, so intermediate partial loads are ignored.
  *
  * Usage:
  * ```ts
@@ -65,11 +60,10 @@ export type ContextChangeHandler = (change: PageContextChange) => void | Promise
  * await watcher.attach();
  *
  * // Inside the step loop:
- * watcher.setStep(i, step);
+ * watcher.setStep(i, step);          // snapshots initial context
  * // … execute actions …
- * const result = await watcher.captureStep("PASSED", step.expectedResult, startedAt);
+ * const result = await watcher.captureStep("PASSED", comment, startedAt);
  *
- * // Cleanup:
  * watcher.detach();
  * ```
  */
@@ -78,11 +72,13 @@ export class PageContextWatcher {
   private readonly artifactDir: string;
 
   private lastContext: PageContext | null = null;
+  /** Context captured the moment setStep() is called — used as the diff baseline. */
+  private stepStartContext: PageContext | null = null;
   private currentStep: { index: number; step: ManualTestStep } | null = null;
-  private changeCounter = 0;
 
   private readonly handlers: ContextChangeHandler[] = [];
   private attached = false;
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Bound references kept so the exact same listener can be removed later.
   private readonly onFrameNavigated: (frame: Frame) => void;
@@ -94,20 +90,17 @@ export class PageContextWatcher {
 
     this.onFrameNavigated = (frame: Frame) => {
       if (frame !== this.page.mainFrame()) return;
-      void this.checkAndEmit("navigation");
+      this.scheduleSettle();
     };
 
     this.onLoad = () => {
-      void this.checkAndEmit("load");
+      this.scheduleSettle();
     };
   }
 
   // ── Registration ─────────────────────────────────────────────────────────────
 
-  /**
-   * Register a callback that fires on every meaningful context change.
-   * Multiple handlers are supported and are called in registration order.
-   */
+  /** Register a callback fired once per step after the page has settled. */
   onContextChange(handler: ContextChangeHandler): void {
     this.handlers.push(handler);
   }
@@ -115,13 +108,16 @@ export class PageContextWatcher {
   // ── Step tracking ─────────────────────────────────────────────────────────────
 
   /**
-   * Tell the watcher which step is currently executing.
-   * Call this at the top of each step-loop iteration **before** any actions run.
-   * Resets the intermediate-change counter for clean per-step artifact naming.
+   * Call this at the start of each step loop iteration — before any actions run.
+   * Snapshots the current page context as the **initial baseline** for diffing.
+   * Also cancels any pending settle timer left over from the previous step.
    */
   setStep(index: number, step: ManualTestStep): void {
+    this.clearDebounce();
     this.currentStep = { index, step };
-    this.changeCounter = 0;
+    // Snapshot the page state right now so we can diff against it once the
+    // page has settled after this step's actions complete.
+    this.stepStartContext = this.lastContext;
     log(`[PageContextWatcher] Watching step ${index + 1}: "${step.action}"`);
   }
 
@@ -131,12 +127,6 @@ export class PageContextWatcher {
    * Take a final snapshot of the current page, write the canonical step
    * artifacts (`step-N.png`, `step-N.json`, `step-N.html`), and return a
    * fully-populated `StepResult`.
-   *
-   * This replaces the old `persistArtifacts` helper in `runner.ts`.
-   *
-   * @param status    - The outcome of the step (PASSED, FAILED, BLOCKED, etc.)
-   * @param comment   - A human-readable comment or expected-result note.
-   * @param startedAt - ISO-8601 timestamp recorded before execution began.
    */
   async captureStep(
     status: StepStatus,
@@ -157,7 +147,6 @@ export class PageContextWatcher {
     await fs.writeFile(domPath, context.dom, "utf-8");
     await this.page.screenshot({ path: screenshotPath, fullPage: true });
 
-    // Keep the internal baseline in sync so subsequent diff checks are accurate.
     this.lastContext = context;
 
     return {
@@ -175,10 +164,7 @@ export class PageContextWatcher {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-  /**
-   * Attach Playwright event listeners and take an initial context snapshot.
-   * Safe to call multiple times (no-op after the first call).
-   */
+  /** Attach Playwright event listeners and take an initial context snapshot. */
   async attach(): Promise<void> {
     if (this.attached) return;
     this.attached = true;
@@ -186,115 +172,121 @@ export class PageContextWatcher {
     try {
       this.lastContext = await extractPageContext(this.page);
     } catch {
-      // Page may not be navigated yet – first real event will set the baseline.
+      // Page may not be navigated yet — first real event will set the baseline.
     }
 
     this.page.on("framenavigated", this.onFrameNavigated);
     this.page.on("load", this.onLoad);
 
-    log("[PageContextWatcher] Attached and listening for page context changes.");
+    log("[PageContextWatcher] Attached. Will emit once per step after page settles.");
   }
 
-  /**
-   * Remove all listeners added by this watcher.
-   * Call this in the `finally` block after the step loop completes.
-   */
+  /** Remove all listeners. Call in the `finally` block after the step loop. */
   detach(): void {
     if (!this.attached) return;
+    this.clearDebounce();
     this.page.off("framenavigated", this.onFrameNavigated);
     this.page.off("load", this.onLoad);
     this.attached = false;
     log("[PageContextWatcher] Detached.");
   }
 
-  /**
-   * Returns the most recently captured {@link PageContext}, or `null` if
-   * `attach()` has not been called or the page was not yet navigated.
-   */
+  /** Returns the most recently captured {@link PageContext}. */
   getLastContext(): PageContext | null {
     return this.lastContext;
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────────
 
-  private async checkAndEmit(trigger: PageContextChange["trigger"]): Promise<void> {
+  /**
+   * Resets the debounce timer on every navigation/load event.
+   * The final emit only happens once the page has been quiet for SETTLE_MS.
+   */
+  private scheduleSettle(): void {
+    if (!this.currentStep) return;
+    this.clearDebounce();
+    this.debounceTimer = setTimeout(() => {
+      void this.emitFinalChange();
+    }, env.watcherSettleMs);
+  }
+
+  private clearDebounce(): void {
+    if (this.debounceTimer !== null) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+  }
+
+  /**
+   * Fires once after the page has been quiet for SETTLE_MS.
+   * Diffs the current page state against the state captured at setStep()
+   * and emits a single PageContextChange if anything changed.
+   */
+  private async emitFinalChange(): Promise<void> {
     if (!this.currentStep) return;
 
-    let newContext: PageContext;
+    const initial = this.stepStartContext;
+
+    let finalContext: PageContext;
     try {
-      newContext = await extractPageContext(this.page);
+      finalContext = await extractPageContext(this.page);
     } catch {
-      // Page is mid-navigation and not yet ready – skip this event.
       return;
     }
 
-    const prev = this.lastContext;
-    if (!prev) {
-      this.lastContext = newContext;
-      return;
-    }
+    this.lastContext = finalContext;
 
-    // ── Diff ────────────────────────────────────────────────────────────────────
+    // If there was no initial snapshot (first step before any navigation), skip.
+    if (!initial) return;
+
+    // ── Diff initial → final ─────────────────────────────────────────────────────
     const changedFields: PageContextChange["changedFields"] = [];
 
-    if (newContext.url !== prev.url) changedFields.push("url");
-    if (newContext.title !== prev.title) changedFields.push("title");
+    if (finalContext.url !== initial.url) changedFields.push("url");
+    if (finalContext.title !== initial.title) changedFields.push("title");
 
-    // Lightweight element fingerprint – avoids full DOM string comparison.
     const fingerprint = (ctx: PageContext): string =>
       ctx.elements.map((e) => `${e.selector}:${e.visible ? "v" : "h"}`).join("|");
 
-    if (fingerprint(newContext) !== fingerprint(prev)) changedFields.push("elements");
+    if (fingerprint(finalContext) !== fingerprint(initial)) changedFields.push("elements");
 
-    if (changedFields.length === 0) {
-      this.lastContext = newContext;
-      return;
-    }
+    if (changedFields.length === 0) return;
 
-    this.lastContext = newContext;
-    this.changeCounter++;
-
-    // ── Intermediate artifact save ───────────────────────────────────────────────
+    // ── Save artifacts ───────────────────────────────────────────────────────────
     const { index, step } = this.currentStep;
-    const base = path.join(
-      this.artifactDir,
-      `step-${index + 1}-change-${this.changeCounter}`
-    );
+    const base = path.join(this.artifactDir, `step-${index + 1}-settled`);
     const contextPath = `${base}.json`;
     const domPath = `${base}.html`;
     const screenshotPath = `${base}.png`;
 
     try {
-      writeJson(contextPath, newContext);
-      await fs.writeFile(domPath, newContext.dom, "utf-8");
+      writeJson(contextPath, finalContext);
+      await fs.writeFile(domPath, finalContext.dom, "utf-8");
       await this.page.screenshot({ path: screenshotPath, fullPage: true });
     } catch {
       // Artifact save failure must never interrupt execution.
     }
 
-    // ── Detailed change logging ──────────────────────────────────────────────────
-    log(
-      `[PageContextWatcher] ── Step ${index + 1} context changed ` +
-      `(trigger: ${trigger}) ──────────────────────────────`
-    );
+    // ── Detailed logging ─────────────────────────────────────────────────────────
+    log(`[PageContextWatcher] ── Step ${index + 1} final context (page settled) ────────────────`);
 
     if (changedFields.includes("url")) {
-      log(`[PageContextWatcher]   URL     : ${prev.url}`);
-      log(`[PageContextWatcher]           → ${newContext.url}`);
+      log(`[PageContextWatcher]   URL     : ${initial.url}`);
+      log(`[PageContextWatcher]           → ${finalContext.url}`);
     }
 
     if (changedFields.includes("title")) {
-      log(`[PageContextWatcher]   Title   : "${prev.title}"`);
-      log(`[PageContextWatcher]           → "${newContext.title}"`);
+      log(`[PageContextWatcher]   Title   : "${initial.title}"`);
+      log(`[PageContextWatcher]           → "${finalContext.title}"`);
     }
 
     if (changedFields.includes("elements")) {
-      const prevSelectors = new Map(prev.elements.map((e) => [e.selector, e]));
-      const newSelectors  = new Map(newContext.elements.map((e) => [e.selector, e]));
+      const prevSelectors = new Map(initial.elements.map((e) => [e.selector, e]));
+      const newSelectors  = new Map(finalContext.elements.map((e) => [e.selector, e]));
 
-      const added   = newContext.elements.filter((e) => !prevSelectors.has(e.selector));
-      const removed = prev.elements.filter((e) => !newSelectors.has(e.selector));
-      const toggled = newContext.elements.filter((e) => {
+      const added   = finalContext.elements.filter((e) => !prevSelectors.has(e.selector));
+      const removed = initial.elements.filter((e) => !newSelectors.has(e.selector));
+      const toggled = finalContext.elements.filter((e) => {
         const old = prevSelectors.get(e.selector);
         return old !== undefined && old.visible !== e.visible;
       });
@@ -303,7 +295,6 @@ export class PageContextWatcher {
         `[PageContextWatcher]   Elements: +${added.length} added, ` +
         `-${removed.length} removed, ${toggled.length} visibility toggled`
       );
-
       for (const el of added) {
         log(`[PageContextWatcher]     + [${el.tag}] ${el.selector}${el.text ? ` "${el.text.slice(0, 60)}"` : ""}`);
       }
@@ -317,7 +308,7 @@ export class PageContextWatcher {
       }
     }
 
-    log(`[PageContextWatcher]   Artifacts saved: ${path.basename(screenshotPath)}`);
+    log(`[PageContextWatcher]   Artifact: ${path.basename(screenshotPath)}`);
 
     // ── Notify handlers ──────────────────────────────────────────────────────────
     if (this.handlers.length === 0) return;
@@ -325,10 +316,9 @@ export class PageContextWatcher {
     const change: PageContextChange = {
       stepIndex: index,
       step,
-      previousContext: prev,
-      currentContext: newContext,
+      initialContext: initial,
+      finalContext,
       changedFields,
-      trigger,
       at: new Date().toISOString(),
       artifacts: { screenshotPath, contextPath, domPath }
     };
@@ -337,7 +327,6 @@ export class PageContextWatcher {
       try {
         await handler(change);
       } catch (err) {
-        // Handler errors must never crash the executor.
         log(`[PageContextWatcher] Handler error: ${(err as Error).message}`);
       }
     }

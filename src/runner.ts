@@ -42,8 +42,8 @@ export async function runManualTest(testCase: ManualTestCase, resumeState?: RunS
   watcher.onContextChange(async (change) => {
     if (env.watcherLogging) {
       logInfo(
-        `[Watcher] Step ${change.stepIndex + 1} — context changed ` +
-        `(${change.changedFields.join(", ")}): ${change.previousContext.url} → ${change.currentContext.url}`
+        `[Watcher] Step ${change.stepIndex + 1} — page settled ` +
+        `(${change.changedFields.join(", ")}): ${change.initialContext.url} → ${change.finalContext.url}`
       );
     }
   });

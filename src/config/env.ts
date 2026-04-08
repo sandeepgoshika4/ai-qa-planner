@@ -19,6 +19,7 @@ export const env = {
   maxAgentActionsPerStep: parseNum("MAX_AGENT_ACTIONS_PER_STEP", 8),
   llmProvider: (process.env.LLM_PROVIDER ?? "openai") as "openai" | "copilot",
   watcherLogging: parseBool("WATCHER_LOGGING", true),
+  watcherSettleMs: parseNum("WATCHER_SETTLE_MS", 800),
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
   llmProxyUrl: process.env.LLM_PROXY_URL ?? "http://localhost:3100/v1",
