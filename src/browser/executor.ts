@@ -325,12 +325,16 @@ export async function executePlannedActions(
         if (action.elementType === "input-autocomplete") {
           const suggestionSelector = await handleAutocomplete(page, value);
           if (suggestionSelector) {
-            // If the next action is a click targeting the same suggestion, update it.
-            if (i + 1 < resolved.length && resolved[i + 1].action === "click") {
-              logInfo(`[Executor] Autocomplete handled — updating next click target to "${suggestionSelector}"`);
-              resolved[i + 1] = { ...resolved[i + 1], target: suggestionSelector };
-              // Mark as already executed so the loop skips it
-              resolved[i + 1] = { ...resolved[i + 1], notes: `${resolved[i + 1].notes ?? ""} [auto-handled by autocomplete]`.trim(), _handled: true } as PlannedAction & { _handled?: boolean };
+            // Skip the next action if it's a click or press that was the LLM's
+            // strategy for confirming the autocomplete (now handled inline).
+            if (i + 1 < resolved.length &&
+                (resolved[i + 1].action === "click" || resolved[i + 1].action === "press")) {
+              logInfo(`[Executor] Autocomplete handled — skipping next "${resolved[i + 1].action}" action`);
+              resolved[i + 1] = {
+                ...resolved[i + 1],
+                notes: `${resolved[i + 1].notes ?? ""} [auto-handled by autocomplete]`.trim(),
+                _handled: true
+              } as PlannedAction & { _handled?: boolean };
             }
           } else {
             logWarn(`[Executor] Autocomplete suggestion for "${value}" not found — proceeding without selection`);
