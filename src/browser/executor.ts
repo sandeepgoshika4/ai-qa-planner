@@ -275,7 +275,43 @@ export async function executePlannedActions(
         if (!action.target) throw new Error("click missing target");
         const loc = resolveLocator(page, action.target).first();
         await loc.highlight();
-        await loc.click();
+
+        // For radio/checkbox: if already in the desired state, skip the click entirely.
+        if (action.elementType === "radio" || action.elementType === "checkbox") {
+          const alreadyChecked = await loc.evaluate((el) => (el as HTMLInputElement).checked).catch(() => false);
+          if (alreadyChecked) {
+            logInfo(`[Executor] Skipping click — ${action.elementType} is already checked: ${action.target}`);
+            resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
+            break;
+          }
+        }
+
+        try {
+          await loc.click({ timeout: 5000 });
+        } catch (clickErr) {
+          // Radio/checkbox inputs are often hidden behind a styled <label> or <span>.
+          // Try clicking the associated label first, then fall back to force click.
+          if (action.elementType === "radio" || action.elementType === "checkbox") {
+            const labelClicked = await loc.evaluate((el) => {
+              const input = el as HTMLInputElement;
+              // Try the <label> that wraps this input
+              const label = input.closest("label") ?? document.querySelector(`label[for="${input.id}"]`);
+              if (label) { (label as HTMLElement).click(); return true; }
+              // Try the parent element
+              const parent = input.parentElement;
+              if (parent) { parent.click(); return true; }
+              return false;
+            }).catch(() => false);
+
+            if (!labelClicked) {
+              // Last resort: force click ignoring pointer-events interception
+              await loc.click({ force: true });
+            }
+          } else {
+            throw clickErr; // non-radio/checkbox click failure — let healer handle it
+          }
+        }
+
         await ensureNoHumanVerification(page);
 
         // Stabilize own target before caching

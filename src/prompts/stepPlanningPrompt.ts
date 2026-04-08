@@ -60,6 +60,12 @@ Rules:
   unsupported-browser, access denied, captcha, or interstitial message,
   DO NOT continue normal automation. Return stopExecution: true with a note.
 - assert actions MUST always have a target — never emit an assert without one. If you cannot identify a specific element to assert, omit the assert entirely.
+- Elements in the page context may include a "checked" field (radio/checkbox) and "currentValue" field (inputs/selects).
+  Before generating a click/fill for a radio, checkbox, or select:
+    • If a radio is already checked (checked: true) and the step wants it selected — SKIP the action.
+    • If a checkbox already matches the desired state — SKIP the action.
+    • If an input already contains the required value — SKIP the fill action.
+  Never click a radio or checkbox that is already in the desired state.
 - Always keep the plan minimal and valid.
 
 Available dataset keys:

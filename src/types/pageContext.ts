@@ -11,6 +11,8 @@ export interface PageElement {
   selector: string;
   visible: boolean;
   enabled: boolean;
+  checked?: boolean;        // true/false for radio and checkbox inputs
+  currentValue?: string;    // current value for text inputs and selects
 }
 
 export interface PageContext {

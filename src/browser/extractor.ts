@@ -21,9 +21,13 @@ export async function extractPageContext(page: Page): Promise<PageContext> {
       else if (placeholder) selector = `${tag}[placeholder="${placeholder}"]`;
       const style = window.getComputedStyle(el);
       const rect = el.getBoundingClientRect();
+      const inputEl = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+      const type = el.getAttribute("type")?.toLowerCase();
+      const isCheckable = type === "radio" || type === "checkbox";
+      const isValueBearing = tag === "select" || tag === "textarea" || (tag === "input" && !isCheckable);
       return {
         elementId: `el_${index + 1}`,
-        tag: el.tagName,
+        tag: el.tagName.toLowerCase(),
         text: (el.innerText || el.textContent || "").trim(),
         name,
         idAttr: id,
@@ -33,7 +37,9 @@ export async function extractPageContext(page: Page): Promise<PageContext> {
         href: el.getAttribute("href"),
         selector,
         visible: style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0,
-        enabled: !el.hasAttribute("disabled")
+        enabled: !el.hasAttribute("disabled"),
+        ...(isCheckable && { checked: (inputEl as HTMLInputElement).checked }),
+        ...(isValueBearing && (inputEl as HTMLInputElement).value && { currentValue: (inputEl as HTMLInputElement).value }),
       };
     });
   });
