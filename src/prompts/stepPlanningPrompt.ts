@@ -59,6 +59,7 @@ Rules:
 - If the page shows an unexpected security, authentication, bot-detection,
   unsupported-browser, access denied, captcha, or interstitial message,
   DO NOT continue normal automation. Return stopExecution: true with a note.
+- assert actions MUST always have a target — never emit an assert without one. If you cannot identify a specific element to assert, omit the assert entirely.
 - Always keep the plan minimal and valid.
 
 Available dataset keys:

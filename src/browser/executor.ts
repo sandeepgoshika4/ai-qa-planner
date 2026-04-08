@@ -161,6 +161,51 @@ async function handleAutocomplete(page: Page, fillValue: string): Promise<string
       await option.highlight().catch(() => {});
       await option.click();
       logInfo(`[Executor] Autocomplete: selected suggestion "${fillValue}" via ${selector}`);
+
+      // Wait for the suggestion list to disappear — confirms selection was accepted
+      const suggestionGone = await page
+        .waitForSelector('[role="listbox"], [role="option"]', { state: "hidden", timeout: 2000 })
+        .then(() => true)
+        .catch(() => false);
+
+      if (!suggestionGone) {
+        logWarn("[Executor] Suggestions still visible after click — forcing dismissal");
+
+        // 1. Press Escape — most frameworks close dropdowns on Escape
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(300);
+
+        const goneAfterEsc = await page
+          .waitForSelector('[role="listbox"], [role="option"]', { state: "hidden", timeout: 1000 })
+          .then(() => true)
+          .catch(() => false);
+
+        if (!goneAfterEsc) {
+          // 2. Click somewhere neutral (body) to blur the input and collapse the dropdown
+          await page.locator("body").click({ position: { x: 0, y: 0 }, force: true });
+          await page.waitForTimeout(300);
+
+          const goneAfterBlur = await page
+            .waitForSelector('[role="listbox"], [role="option"]', { state: "hidden", timeout: 1000 })
+            .then(() => true)
+            .catch(() => false);
+
+          if (!goneAfterBlur) {
+            // 3. Last resort — blur the active element via JS
+            await page.evaluate(() => {
+              const el = document.activeElement as HTMLElement | null;
+              el?.blur();
+            });
+            await page.waitForTimeout(300);
+            logWarn("[Executor] Suggestions may still be visible — proceeding anyway");
+          } else {
+            logInfo("[Executor] Suggestions dismissed via body click");
+          }
+        } else {
+          logInfo("[Executor] Suggestions dismissed via Escape key");
+        }
+      }
+
       return selector;
     }
   } catch {
@@ -299,7 +344,10 @@ export async function executePlannedActions(
         break;
 
       case "assert": {
-        if (!action.target) throw new Error("assert missing target");
+        if (!action.target) {
+          logWarn(`[Executor] Skipping assert — LLM generated no target (elementType: ${action.elementType ?? "unknown"}). Update the prompt or re-run to regenerate the plan.`);
+          break;
+        }
         await resolveLocator(page, action.target).first().waitFor({
           state: "visible",
           timeout: 8000
