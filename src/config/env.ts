@@ -17,6 +17,7 @@ export const env = {
   stepDelayMs: parseNum("STEP_DELAY_MS", 400),
   keepBrowserOpen: parseBool("KEEP_BROWSER_OPEN", false),
   maxAgentActionsPerStep: parseNum("MAX_AGENT_ACTIONS_PER_STEP", 8),
+  healMaxAttempts: parseNum("HEAL_MAX_ATTEMPTS", 2),
   llmProvider: (process.env.LLM_PROVIDER ?? "openai") as "openai" | "copilot",
   watcherLogging: parseBool("WATCHER_LOGGING", true),
   watcherSettleMs: parseNum("WATCHER_SETTLE_MS", 800),

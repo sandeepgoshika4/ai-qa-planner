@@ -5,6 +5,8 @@ import type { PageElement } from "../types/pageContext.js";
 import { logInfo, logWarn } from "../utils/logger.js";
 import { resolveLocator } from "./locatorResolver.js";
 import { extractPageContext } from "./extractor.js";
+import { toStableSelector } from "./locatorStabilizer.js";
+import { ActionHealer } from "../agents/actionHealer.js";
 import { HumanVerificationRequiredError } from "../errors/humanVerificationError.js";
 import { detectHumanVerification } from "../detectors/detectHumanVerification.js";
 
@@ -221,34 +223,46 @@ async function handleAutocomplete(page: Page, fillValue: string): Promise<string
  * Execute planned actions and return a copy with targets resolved to actual
  * CSS selectors discovered at runtime.
  *
- * The returned array is suitable for saving back to the plan cache so future
- * runs skip dynamic discovery entirely.
+ * When an action fails, the ActionHealer is invoked to ask the LLM to repair
+ * just that action using the current live page context. Healing is retried up
+ * to HEAL_MAX_ATTEMPTS times before the error is re-thrown to the caller.
+ *
+ * The returned array (including any healed replacements) is suitable for
+ * saving back to the plan cache.
  */
 export async function executePlannedActions(
   page: Page,
   actions: PlannedAction[],
-  dataSet: Record<string, string>
+  dataSet: Record<string, string>,
+  stepDescription: string = ""
 ): Promise<PlannedAction[]> {
+  const healer = new ActionHealer();
   // Work on a shallow-copied array so we can update targets without mutating the original
   const resolved: PlannedAction[] = actions.map((a) => ({ ...a }));
 
   for (let i = 0; i < resolved.length; i++) {
-    const action = resolved[i];
-
-    if (action.notes) logInfo(`Planner notes: ${action.notes}`);
-
-    if (action.stopExecution) {
+    // Early exits are checked once, outside the heal loop
+    if (resolved[i].notes) logInfo(`Planner notes: ${resolved[i].notes}`);
+    if (resolved[i].stopExecution) {
       logInfo("Execution stopped by planner due to blocked/unexpected state.");
       return resolved;
     }
 
-    logInfo(
-      `Executing action: ${action.action}` +
-      `${action.target ? ` -> ${action.target}` : ""}` +
-      `${action.elementType ? ` [${action.elementType}]` : ""}`
-    );
+    let healAttempt = 0;
 
-    switch (action.action) {
+    // ── Heal-retry loop ────────────────────────────────────────────────────────
+    while (true) {
+      const action = resolved[i]; // re-read each attempt — healer may have updated it
+
+      logInfo(
+        `Executing action: ${action.action}` +
+        `${action.target ? ` -> ${action.target}` : ""}` +
+        `${action.elementType ? ` [${action.elementType}]` : ""}` +
+        (healAttempt > 0 ? ` (heal attempt ${healAttempt}/${env.healMaxAttempts})` : "")
+      );
+
+      try {
+        switch (action.action) {
       case "goto": {
         const url = action.valueKey ? dataSet[action.valueKey] : action.value;
         if (!url) throw new Error("Missing URL");
@@ -264,9 +278,11 @@ export async function executePlannedActions(
         await loc.click();
         await ensureNoHumanVerification(page);
 
+        // Stabilize own target before caching
+        resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
+
         // After clicking an accordion, tab, or dropdown, new elements appear.
-        // Try to resolve the NEXT action's target in the fresh context so we
-        // can store the exact locator in the cache.
+        // Resolve + stabilize the NEXT action's target in the fresh context.
         const triggersReveal =
           action.elementType === "accordion" ||
           action.elementType === "tab" ||
@@ -279,8 +295,9 @@ export async function executePlannedActions(
             const elements = await settleAndExtract(page);
             const found = findInElements(elements, next.target, next.elementType);
             if (found) {
-              logInfo(`[Executor] Resolved dynamic target "${next.target}" → "${found}"`);
-              resolved[i + 1] = { ...next, target: found };
+              const stableFound = await toStableSelector(page, found);
+              logInfo(`[Executor] Resolved dynamic target "${next.target}" → "${stableFound}"`);
+              resolved[i + 1] = { ...next, target: stableFound };
             } else {
               logWarn(`[Executor] Could not find "${next.target}" after ${action.elementType} click — will attempt with original target`);
             }
@@ -295,20 +312,12 @@ export async function executePlannedActions(
         if (value == null) throw new Error("fill missing value");
         const loc = resolveLocator(page, action.target).first();
 
-        // Store the actual resolved selector for caching
-        const resolvedSelector = await loc.evaluate((el) => {
-          if (el.id) return `#${el.id}`;
-          if (el.getAttribute("name")) return `[name="${el.getAttribute("name")}"]`;
-          if (el.getAttribute("placeholder")) return `[placeholder="${el.getAttribute("placeholder")}"]`;
-          return el.tagName.toLowerCase();
-        }).catch(() => action.target as string);
-
-        if (resolvedSelector !== action.target) {
-          resolved[i] = { ...action, target: resolvedSelector };
-        }
-
         await loc.highlight();
         await loc.fill(value);
+
+        // Stabilize the target AFTER filling (element still in DOM) so the
+        // cached selector survives the next page load even if the id is random.
+        resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
         await ensureNoHumanVerification(page);
 
         // For autocomplete inputs: wait for suggestions, click the matching one,
@@ -336,6 +345,9 @@ export async function executePlannedActions(
         await loc.highlight();
         await loc.press(action.value ?? "Enter");
         await ensureNoHumanVerification(page);
+
+        // Stabilize target while element is still reachable
+        resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
         break;
       }
 
@@ -356,9 +368,51 @@ export async function executePlannedActions(
         break;
       }
 
-      case "done":
-        return resolved;
-    }
+          case "done":
+            return resolved;
+        }
+
+        // ── Action succeeded — exit the heal loop ────────────────────────────
+        break;
+
+      } catch (err) {
+        // Human verification must never be swallowed — let runner handle it
+        if (err instanceof HumanVerificationRequiredError) throw err;
+
+        healAttempt++;
+        const errMsg = (err as Error).message;
+
+        logWarn(
+          `[ActionHealer] Action failed: "${errMsg}"` +
+          (healAttempt <= env.healMaxAttempts
+            ? ` — starting heal attempt ${healAttempt}/${env.healMaxAttempts}`
+            : " — all heal attempts exhausted")
+        );
+
+        if (healAttempt > env.healMaxAttempts) throw err;
+
+        // Capture live page state for the healer
+        let freshCtx;
+        try { freshCtx = await extractPageContext(page); } catch { throw err; }
+
+        const healed = await healer.repairAction(
+          resolved[i],
+          errMsg,
+          freshCtx,
+          stepDescription,
+          resolved.slice(0, i)   // actions already completed
+        );
+
+        if (!healed) {
+          logWarn("[ActionHealer] LLM could not produce a repair — re-throwing");
+          throw err;
+        }
+
+        resolved[i] = healed;
+        logInfo(`[ActionHealer] Retrying with healed action...`);
+        // Loop continues → re-executes resolved[i] with the healed action
+      }
+    } // end heal-retry while
 
     // Skip actions that were already handled inline (e.g. autocomplete click)
     if ((resolved[i + 1] as (PlannedAction & { _handled?: boolean }) | undefined)?._handled) {

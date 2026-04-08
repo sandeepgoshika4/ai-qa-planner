@@ -117,7 +117,7 @@ export async function runManualTest(testCase: ManualTestCase, resumeState?: RunS
       }
 
       try {
-        const resolvedActions = await executePlannedActions(page, plan.actions, testCase.dataSet);
+        const resolvedActions = await executePlannedActions(page, plan.actions, testCase.dataSet, step.action);
         // Write resolved locators back to cache so the next run skips dynamic discovery
         saveCachedStepPlan(domain, step.action, { ...plan, actions: resolvedActions });
       } catch (error) {
@@ -132,7 +132,7 @@ export async function runManualTest(testCase: ManualTestCase, resumeState?: RunS
 
         // Re-plan with fresh context (Idea 4 fallback)
         plan = await planner.planStep(step, refreshed, testCase.dataSet);
-        const resolvedActions = await executePlannedActions(page, plan.actions, testCase.dataSet);
+        const resolvedActions = await executePlannedActions(page, plan.actions, testCase.dataSet, step.action);
         // Cache the re-planned + resolved actions so this fallback only happens once
         saveCachedStepPlan(domain, step.action, { ...plan, actions: resolvedActions });
       }
