@@ -12,7 +12,8 @@ import { savePendingUpload } from "./storage/pendingUploadStore.js";
 import { saveRunState } from "./storage/runStateStore.js";
 import { ensureDir, slugify } from "./utils/fs.js";
 import { prompt } from "./utils/cli.js";
-import { logInfo, logWarn } from "./utils/logger.js";
+import { logInfo, logWarn, logError } from "./utils/logger.js";
+import { FatalExecutionError } from "./errors/fatalExecutionError.js";
 import { buildXrayExecutionImportPayload } from "./integrations/xray/uploadMapper.js";
 import { detectBlockedState } from "./detectors/detectBlockedState.js";
 import { detectHumanVerification } from "./detectors/detectHumanVerification.js";
@@ -135,7 +136,28 @@ export async function runManualTest(
         const resolvedActions = await executePlannedActions(page, plan.actions, testCase.dataSet, step.action);
         // Write resolved locators back to cache so the next run skips dynamic discovery
         saveCachedStepPlan(domain, step.action, { ...plan, actions: resolvedActions });
+
+        state.stepResults.push(
+          await watcher.captureStep("PASSED", step.expectedResult ?? "Completed", startedAt)
+        );
       } catch (error) {
+        // ── Fatal system/service error: do NOT re-plan, do NOT heal ─────────────
+        if (error instanceof FatalExecutionError) {
+          logError(`\n[FATAL] ${error.message}`);
+          if (error.cause) logError(`  Caused by: ${error.cause.message}`);
+          state.stepResults.push(
+            await watcher.captureStep(
+              "FAILED",
+              `Fatal error — system/service unavailable: ${error.message}`,
+              startedAt
+            )
+          );
+          saveRunState(state);
+          // Stop executing the remaining steps — the service is down
+          break;
+        }
+
+        // ── Recoverable failure: re-plan with fresh context ───────────────────
         logWarn(`Plan failed: ${(error as Error).message}`);
         let refreshed = await extractPageContext(page);
 
@@ -145,16 +167,36 @@ export async function runManualTest(
           refreshed = await extractPageContext(page);
         }
 
-        // Re-plan with fresh context (Idea 4 fallback)
-        plan = await planner.planStep(step, refreshed, testCase.dataSet);
-        const resolvedActions = await executePlannedActions(page, plan.actions, testCase.dataSet, step.action);
-        // Cache the re-planned + resolved actions so this fallback only happens once
-        saveCachedStepPlan(domain, step.action, { ...plan, actions: resolvedActions });
+        try {
+          // Re-plan with fresh context (Idea 4 fallback)
+          plan = await planner.planStep(step, refreshed, testCase.dataSet);
+          const resolvedActions = await executePlannedActions(page, plan.actions, testCase.dataSet, step.action);
+          // Cache the re-planned + resolved actions so this fallback only happens once
+          saveCachedStepPlan(domain, step.action, { ...plan, actions: resolvedActions });
+
+          state.stepResults.push(
+            await watcher.captureStep("PASSED", step.expectedResult ?? "Completed", startedAt)
+          );
+        } catch (retryError) {
+          // Re-plan also failed — check if it's fatal before giving up
+          if (retryError instanceof FatalExecutionError) {
+            logError(`\n[FATAL] ${(retryError as FatalExecutionError).message}`);
+          } else {
+            logError(`Step ${i + 1} failed after re-plan: ${(retryError as Error).message}`);
+          }
+          state.stepResults.push(
+            await watcher.captureStep(
+              "FAILED",
+              `Step failed: ${(retryError as Error).message}`,
+              startedAt
+            )
+          );
+          saveRunState(state);
+          break;
+        }
       }
 
-      state.stepResults.push(
-        await watcher.captureStep("PASSED", step.expectedResult ?? "Completed", startedAt)
-      );
+      saveRunState(state);
       saveRunState(state);
     }
   } finally {

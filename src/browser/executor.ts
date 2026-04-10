@@ -8,6 +8,7 @@ import { extractPageContext } from "./extractor.js";
 import { toStableSelector } from "./locatorStabilizer.js";
 import { ActionHealer } from "../agents/actionHealer.js";
 import { HumanVerificationRequiredError } from "../errors/humanVerificationError.js";
+import { FatalExecutionError, isFatalError } from "../errors/fatalExecutionError.js";
 import { detectHumanVerification } from "../detectors/detectHumanVerification.js";
 
 async function ensureNoHumanVerification(page: Page): Promise<void> {
@@ -419,8 +420,21 @@ export async function executePlannedActions(
         // Human verification must never be swallowed — let runner handle it
         if (err instanceof HumanVerificationRequiredError) throw err;
 
-        healAttempt++;
+        // Fatal errors (HTTP 4xx/5xx, network down, service errors) cannot be
+        // repaired by replanning — fail immediately without healing.
         const errMsg = (err as Error).message;
+        let pageTitle: string | undefined;
+        try { pageTitle = await page.title(); } catch { /* ignore */ }
+
+        if (isFatalError(errMsg, pageTitle)) {
+          const label = `${action.action}${action.target ? ` -> ${action.target}` : ""}`;
+          throw new FatalExecutionError(
+            `[Fatal] Step failed — system/service error on action "${label}": ${errMsg}`,
+            err as Error
+          );
+        }
+
+        healAttempt++;
 
         logWarn(
           `[ActionHealer] Action failed: "${errMsg}"` +
