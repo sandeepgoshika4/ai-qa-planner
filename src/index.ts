@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   if (args.resume) {
     const state = loadRunState(args.resume);
-    await runManualTest(state.testCase, state);
+    await runManualTest(state.testCase, state, { auto: args.auto });
     return;
   }
 
@@ -27,7 +27,7 @@ async function main(): Promise<void> {
 
   for (const testCase of cases) {
     logInfo(`Running: ${testCase.testName}`);
-    const result = await runManualTest(testCase);
+    const result = await runManualTest(testCase, undefined, { auto: args.auto });
     if (result.pendingUploadPath) {
       logInfo(`Review artifacts, then approve upload: npm run approve:upload -- ${result.pendingUploadPath} --approve`);
     }

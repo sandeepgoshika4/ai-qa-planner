@@ -196,6 +196,44 @@ export class PageContextWatcher {
     return this.lastContext;
   }
 
+  /**
+   * Wait for the page to be fully idle before proceeding to the next step.
+   *
+   * Checks in order:
+   *   1. networkidle — no in-flight requests for 500 ms
+   *   2. No visible loading spinners / progress bars / aria-busy elements
+   *
+   * Returns the stable {@link PageContext} once the page is ready.
+   * Never throws — falls back to whatever state the page is in if timeouts hit.
+   */
+  async waitForSettle(timeoutMs = 20000): Promise<PageContext> {
+    // 1. Wait for network to go idle
+    await this.page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
+
+    // 2. Wait for common loading indicators to disappear
+    const spinnerSelectors = [
+      '[role="progressbar"]',
+      '[aria-busy="true"]',
+      '[class*="loading"]:visible',
+      '[class*="spinner"]:visible',
+      '[class*="loader"]:visible',
+      '.loading:visible',
+      '.spinner:visible',
+    ];
+
+    for (const sel of spinnerSelectors) {
+      await this.page
+        .waitForSelector(sel, { state: "hidden", timeout: 5000 })
+        .catch(() => {}); // selector may not exist — that's fine
+    }
+
+    // 3. Snapshot final state
+    const ctx = await extractPageContext(this.page);
+    this.lastContext = ctx;
+    log(`[PageContextWatcher] Page settled for auto-step. URL: ${ctx.url}`);
+    return ctx;
+  }
+
   // ── Internal ──────────────────────────────────────────────────────────────────
 
   /**

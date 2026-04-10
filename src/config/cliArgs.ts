@@ -6,6 +6,8 @@ export interface CliOptions {
   approvePending?: string;
   rejectPending?: string;
   recordingFile?: string;
+  /** When true, skip per-step prompts and run all steps automatically. */
+  auto?: boolean;
 }
 export function parseCliArgs(argv: string[]): CliOptions {
   const out: CliOptions = {};
@@ -17,6 +19,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     if (arg === "--resume") out.resume = next;
     if (arg === "--approve") out.approvePending = next;
     if (arg === "--reject") out.rejectPending = next;
+    if (arg === "--auto") out.auto = true;
     if (!arg.startsWith("--") && !out.recordingFile) out.recordingFile = arg;
   }
   return out;

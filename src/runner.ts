@@ -18,7 +18,12 @@ import { detectBlockedState } from "./detectors/detectBlockedState.js";
 import { detectHumanVerification } from "./detectors/detectHumanVerification.js";
 import { handleManualVerificationPause } from "./helpers/handleManualVerificationPause.js";
 
-export async function runManualTest(testCase: ManualTestCase, resumeState?: RunState): Promise<{ runState: RunState; pendingUploadPath?: string }> {
+export async function runManualTest(
+  testCase: ManualTestCase,
+  resumeState?: RunState,
+  options?: { auto?: boolean }
+): Promise<{ runState: RunState; pendingUploadPath?: string }> {
+  const autoMode = options?.auto ?? false;
   const planner = new OpenAiPlanner();
   const runId = resumeState?.runId ?? `${Date.now()}-${slugify(testCase.testName)}`;
   const artifactDir = ensureDir(path.resolve("out/runs", runId));
@@ -64,28 +69,38 @@ export async function runManualTest(testCase: ManualTestCase, resumeState?: RunS
       // Register the active step with the watcher before anything else runs.
       watcher.setStep(i, step);
 
-      const cmd = (await prompt("Enter = continue, m = manual mode, s = save & stop: ")).toLowerCase();
+      let current: Awaited<ReturnType<typeof extractPageContext>>;
 
-      if (cmd === "s") {
-        state.paused = true;
-        const statePath = saveRunState(state);
-        logWarn(`Stopped. Resume later with: npm run dev -- --resume ${statePath}`);
-        break;
+      if (autoMode) {
+        // In auto mode: wait for the page to fully settle before each step,
+        // then proceed without any user prompt.
+        logInfo("Auto mode: waiting for page to settle...");
+        current = await watcher.waitForSettle();
+      } else {
+        const cmd = (await prompt("Enter = continue, m = manual mode, s = save & stop: ")).toLowerCase();
+
+        if (cmd === "s") {
+          state.paused = true;
+          const statePath = saveRunState(state);
+          logWarn(`Stopped. Resume later with: npm run dev -- --resume ${statePath}`);
+          break;
+        }
+
+        if (cmd === "m") {
+          const startedAt = new Date().toISOString();
+          logInfo("Manual mode enabled. Perform the step yourself in the open browser.");
+          await prompt("Press Enter when the manual step is finished: ");
+          state.stepResults.push(
+            await watcher.captureStep("MANUAL_PASSED", "Marked as manual pass by operator.", startedAt)
+          );
+          saveRunState(state);
+          continue;
+        }
+
+        current = await extractPageContext(page);
       }
 
       const startedAt = new Date().toISOString();
-
-      if (cmd === "m") {
-        logInfo("Manual mode enabled. Perform the step yourself in the open browser.");
-        await prompt("Press Enter when the manual step is finished: ");
-        state.stepResults.push(
-          await watcher.captureStep("MANUAL_PASSED", "Marked as manual pass by operator.", startedAt)
-        );
-        saveRunState(state);
-        continue;
-      }
-
-      let current = await extractPageContext(page);
 
       const humanVerificationReason = await detectHumanVerification(page);
       if (humanVerificationReason) {
