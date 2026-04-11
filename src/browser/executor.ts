@@ -16,6 +16,78 @@ async function ensureNoHumanVerification(page: Page): Promise<void> {
   if (reason) throw new HumanVerificationRequiredError(reason);
 }
 
+// ─── Select option helper ────────────────────────────────────────────────────
+
+/**
+ * Robustly select an option from a native <select> or a custom select
+ * component (e.g. bss-select, ng-select) that wraps a hidden <select>.
+ *
+ * Strategy:
+ *  1. If the resolved element IS a native <select> — use Playwright selectOption.
+ *  2. If it is NOT (e.g. a search <input> injected by the component), walk the
+ *     DOM upward to find the closest <select> sibling/ancestor, then set its
+ *     value via JavaScript and dispatch change + input events so Angular/Vue/React
+ *     picks up the change.
+ *  3. Last resort: search every <select> on the page for an option that matches
+ *     the desired label or value.
+ */
+async function robustSelectOption(page: Page, target: string, value: string): Promise<void> {
+  const loc = resolveLocator(page, target).first();
+  await loc.highlight();
+
+  const tagName = await loc.evaluate((el) => el.tagName.toLowerCase()).catch(() => "unknown");
+
+  if (tagName === "select") {
+    // Happy path — native select, use Playwright
+    try {
+      await loc.selectOption({ label: value }, { timeout: 5000 });
+      return;
+    } catch {
+      await loc.selectOption({ value }, { timeout: 5000 });
+      return;
+    }
+  }
+
+  // The resolved element is NOT a <select> (custom component search input).
+  // Use JavaScript to find the real <select> and set the value.
+  logInfo(`[Executor] Resolved element is <${tagName}>, not <select> — using JS fallback for selectOption`);
+
+  const selected = await page.evaluate(({ val }) => {
+    /**
+     * Walk every <select> on the page and find an option whose visible text or
+     * value attribute matches `val` (case-insensitive).  When found, set the
+     * select's value and fire the events that Angular / other frameworks listen
+     * to for model updates.
+     */
+    const selects = Array.from(document.querySelectorAll("select"));
+    for (const sel of selects) {
+      const option = Array.from(sel.options).find(
+        (o) =>
+          o.text.trim().toLowerCase() === val.toLowerCase() ||
+          o.value.toLowerCase() === val.toLowerCase() ||
+          o.text.trim().toLowerCase().includes(val.toLowerCase())
+      );
+      if (option) {
+        sel.value = option.value;
+        // Fire all events Angular / Vue / React / plain JS might listen to
+        ["input", "change"].forEach((type) =>
+          sel.dispatchEvent(new Event(type, { bubbles: true }))
+        );
+        return { found: true, usedValue: option.value, label: option.text.trim() };
+      }
+    }
+    return { found: false };
+  }, { val: value });
+
+  if (!selected.found) {
+    throw new Error(
+      `selectOption: could not find option "${value}" in any <select> on the page`
+    );
+  }
+
+  logInfo(`[Executor] JS selectOption: set value="${selected.usedValue}" (label="${selected.label}")`);
+}
+
 // ─── Dynamic element discovery ───────────────────────────────────────────────
 
 /**
@@ -347,15 +419,8 @@ export async function executePlannedActions(
         if (!action.target) throw new Error("selectOption missing target");
         const value = action.valueKey ? dataSet[action.valueKey] : action.value;
         if (value == null) throw new Error("selectOption missing value");
-        const loc = resolveLocator(page, action.target).first();
-        await loc.highlight();
 
-        // Try selecting by visible label first, then by value attribute
-        try {
-          await loc.selectOption({ label: value });
-        } catch {
-          await loc.selectOption({ value });
-        }
+        await robustSelectOption(page, action.target, value);
 
         resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
         await ensureNoHumanVerification(page);
@@ -368,16 +433,11 @@ export async function executePlannedActions(
         if (value == null) throw new Error("fill missing value");
         const loc = resolveLocator(page, action.target).first();
 
-        // If the target is a <select> element, fill() won't work — use selectOption instead.
+        // If the target is a <select> element (or marked as select), fill() won't work.
         const tagName = await loc.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
         if (tagName === "select" || action.elementType === "select") {
           logInfo(`[Executor] Target is a <select> — switching fill → selectOption for "${action.target}"`);
-          await loc.highlight();
-          try {
-            await loc.selectOption({ label: value });
-          } catch {
-            await loc.selectOption({ value });
-          }
+          await robustSelectOption(page, action.target, value);
           resolved[i] = { ...resolved[i], action: "selectOption", target: await toStableSelector(page, action.target) };
           await ensureNoHumanVerification(page);
           break;
