@@ -7,6 +7,7 @@ import { resolveLocator } from "./locatorResolver.js";
 import { extractPageContext } from "./extractor.js";
 import { toStableSelector } from "./locatorStabilizer.js";
 import { ActionHealer } from "../agents/actionHealer.js";
+import { VisualLocator } from "../agents/visualLocator.js";
 import { HumanVerificationRequiredError } from "../errors/humanVerificationError.js";
 import { FatalExecutionError, isFatalError } from "../errors/fatalExecutionError.js";
 import { detectHumanVerification } from "../detectors/detectHumanVerification.js";
@@ -320,6 +321,7 @@ export async function executePlannedActions(
   stepDescription: string = ""
 ): Promise<PlannedAction[]> {
   const healer = new ActionHealer();
+  const visualLocator = new VisualLocator();
   // Work on a shallow-copied array so we can update targets without mutating the original
   const resolved: PlannedAction[] = actions.map((a) => ({ ...a }));
 
@@ -548,6 +550,34 @@ export async function executePlannedActions(
 
         if (healAttempt > env.healMaxAttempts) throw err;
 
+        // ── Final heal attempt: try visual locator first ───────────────────────
+        if (healAttempt === env.healMaxAttempts && env.visualLocatorEnabled) {
+          logInfo(`[VisualLocator] Final heal attempt — trying screenshot-based element location`);
+          const visual = await visualLocator.locate(page, resolved[i], stepDescription);
+
+          if (visual?.type === "coordinates") {
+            // Click directly at the pixel coordinates identified in the screenshot
+            logInfo(`[VisualLocator] Clicking at (${visual.x}, ${visual.y}): ${visual.explanation}`);
+            await page.mouse.click(visual.x, visual.y);
+            await ensureNoHumanVerification(page);
+            resolved[i] = {
+              ...resolved[i],
+              notes: `${resolved[i].notes ?? ""} [visual locator: clicked at (${visual.x}, ${visual.y})]`.trim()
+            };
+            break; // Action succeeded — exit the heal-retry loop
+          }
+
+          if (visual?.type === "selector") {
+            // Swap in the visually-identified selector and retry the action normally
+            logInfo(`[VisualLocator] Updating target to visually-identified selector: "${visual.selector}"`);
+            resolved[i] = { ...resolved[i], target: visual.selector };
+            continue; // Restart the while loop with the new selector
+          }
+
+          logWarn(`[VisualLocator] Could not locate element visually — falling back to text healer`);
+        }
+
+        // ── Text-based healer ─────────────────────────────────────────────────
         // Capture live page state for the healer
         let freshCtx;
         try { freshCtx = await extractPageContext(page); } catch { throw err; }

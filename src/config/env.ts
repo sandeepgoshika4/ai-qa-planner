@@ -18,6 +18,8 @@ export const env = {
   keepBrowserOpen: parseBool("KEEP_BROWSER_OPEN", false),
   maxAgentActionsPerStep: parseNum("MAX_AGENT_ACTIONS_PER_STEP", 8),
   healMaxAttempts: parseNum("HEAL_MAX_ATTEMPTS", 2),
+  visualLocatorEnabled: parseBool("VISUAL_LOCATOR_ENABLED", false),
+  visionModel: process.env.VISION_MODEL ?? "gpt-4o",
   llmProvider: (process.env.LLM_PROVIDER ?? "openai") as "openai" | "copilot",
   watcherLogging: parseBool("WATCHER_LOGGING", true),
   watcherSettleMs: parseNum("WATCHER_SETTLE_MS", 800),
