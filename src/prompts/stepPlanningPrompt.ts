@@ -1,7 +1,9 @@
+import type { PlannerContext } from "../browser/pageContextFilter.js";
+
 export function buildStepPlanningPrompt(
   stepText: string,
   expectedResult: string | undefined,
-  pageContext: any,
+  pageContext: PlannerContext,
   dataKeys: string[]
 ): string {
   return `
@@ -79,7 +81,10 @@ ${stepText}
 Expected result:
 ${expectedResult ?? "Not specified"}
 
-Current page context:
-${JSON.stringify(pageContext).slice(0, 8000)}
+Current page context (${pageContext._stats.sentToLlm} visible interactive elements of ${pageContext._stats.totalExtracted} total):
+URL: ${pageContext.url}
+Title: ${pageContext.title}
+Elements:
+${JSON.stringify(pageContext.elements, null, 2)}
 `;
 }

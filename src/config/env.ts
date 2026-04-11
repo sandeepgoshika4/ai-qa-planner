@@ -17,6 +17,7 @@ export const env = {
   stepDelayMs: parseNum("STEP_DELAY_MS", 400),
   keepBrowserOpen: parseBool("KEEP_BROWSER_OPEN", false),
   maxAgentActionsPerStep: parseNum("MAX_AGENT_ACTIONS_PER_STEP", 8),
+  maxPlannerElements: parseNum("MAX_PLANNER_ELEMENTS", 60),
   healMaxAttempts: parseNum("HEAL_MAX_ATTEMPTS", 2),
   visualLocatorEnabled: parseBool("VISUAL_LOCATOR_ENABLED", false),
   visionModel: process.env.VISION_MODEL ?? "gpt-4o",

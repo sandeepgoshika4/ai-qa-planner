@@ -1,5 +1,6 @@
 import { env } from "../config/env.js";
 import { makeLlmClient } from "../llm/client.js";
+import { filterPageContext, type PlannerContext } from "../browser/pageContextFilter.js";
 import type { PlannedAction } from "../types/planner.js";
 import type { PageContext } from "../types/pageContext.js";
 import { logInfo, logWarn } from "../utils/logger.js";
@@ -27,7 +28,9 @@ export class ActionHealer {
   ): Promise<PlannedAction | null> {
     logInfo(`[ActionHealer] Attempting to repair action: ${failedAction.action}${failedAction.target ? ` -> ${failedAction.target}` : ""}`);
 
-    const prompt = this.buildPrompt(failedAction, error, pageContext, stepDescription, completedActions);
+    // Use a smaller cap for healing — focus on the most actionable elements
+    const filtered = filterPageContext(pageContext, 40);
+    const prompt = this.buildPrompt(failedAction, error, filtered, stepDescription, completedActions);
 
     try {
       const response = await this.client.chat.completions.create({
@@ -66,7 +69,7 @@ export class ActionHealer {
   private buildPrompt(
     failedAction: PlannedAction,
     error: string,
-    pageContext: PageContext,
+    pageContext: PlannerContext,
     stepDescription: string,
     completedActions: PlannedAction[]
   ): string {
@@ -86,15 +89,11 @@ ${JSON.stringify(failedAction, null, 2)}
 ## Error
 ${error}
 
-## Current page context (live snapshot taken after failure)
+## Current page context (live snapshot — ${pageContext._stats.sentToLlm} visible interactive elements)
 URL: ${pageContext.url}
 Title: ${pageContext.title}
-Visible elements:
-${JSON.stringify(
-  pageContext.elements.filter((e) => e.visible).slice(0, 80),
-  null,
-  2
-)}
+Elements:
+${JSON.stringify(pageContext.elements, null, 2)}
 
 ## Your task
 Return a single corrected action JSON object that will achieve the same intent as the failed action.
