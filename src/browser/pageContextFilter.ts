@@ -43,6 +43,8 @@ export interface PlannerElement {
   href?: string;
   checked?: boolean;
   currentValue?: string;
+  /** Present and false when element is natively disabled — LLM should not target it. */
+  enabled?: false;
 }
 
 /**
@@ -80,7 +82,12 @@ const INTERACTIVE_ROLES = new Set([
 ]);
 
 function isInteractive(el: PageElement): boolean {
-  if (!el.visible || !el.enabled) return false;
+  // Only require visibility — NOT enabled. Angular and custom components often
+  // omit the native `disabled` HTML attribute in favour of CSS classes or
+  // aria-disabled, so our enabled flag would incorrectly exclude them.
+  // The LLM also benefits from knowing about disabled elements
+  // (e.g. "Next is disabled because a required field is empty").
+  if (!el.visible) return false;
   if (INTERACTIVE_TAGS.has(el.tag)) return true;
   if (el.role && INTERACTIVE_ROLES.has(el.role.toLowerCase())) return true;
   return false;
@@ -153,6 +160,8 @@ function toPlannedElement(el: PageElement, kind: "interactive" | "context"): Pla
 
   if (el.checked !== undefined) out.checked      = el.checked;
   if (el.currentValue)          out.currentValue = el.currentValue;
+  // Only flag when explicitly disabled — absence means enabled (saves tokens)
+  if (!el.enabled)              out.enabled      = false;
 
   return out;
 }
