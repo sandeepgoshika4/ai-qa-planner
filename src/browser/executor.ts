@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 import { env } from "../config/env.js";
 import type { ElementType, PlannedAction } from "../types/planner.js";
 import type { PageElement } from "../types/pageContext.js";
@@ -10,6 +10,16 @@ import { ActionHealer } from "../agents/actionHealer.js";
 import { HumanVerificationRequiredError } from "../errors/humanVerificationError.js";
 import { FatalExecutionError, isFatalError } from "../errors/fatalExecutionError.js";
 import { detectHumanVerification } from "../detectors/detectHumanVerification.js";
+
+/**
+ * Scroll the element into the visible viewport, then highlight it.
+ * Silently ignores scroll/highlight errors (e.g. detached element) so they
+ * never block the actual interaction that follows.
+ */
+async function scrollAndHighlight(loc: Locator): Promise<void> {
+  await loc.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
+  await loc.highlight().catch(() => {});
+}
 
 async function ensureNoHumanVerification(page: Page): Promise<void> {
   const reason = await detectHumanVerification(page);
@@ -33,7 +43,7 @@ async function ensureNoHumanVerification(page: Page): Promise<void> {
  */
 async function robustSelectOption(page: Page, target: string, value: string): Promise<void> {
   const loc = resolveLocator(page, target).first();
-  await loc.highlight();
+  await scrollAndHighlight(loc);
 
   const tagName = await loc.evaluate((el) => el.tagName.toLowerCase()).catch(() => "unknown");
 
@@ -347,7 +357,7 @@ export async function executePlannedActions(
       case "click": {
         if (!action.target) throw new Error("click missing target");
         const loc = resolveLocator(page, action.target).first();
-        await loc.highlight();
+        await scrollAndHighlight(loc);
 
         // For radio/checkbox: if already in the desired state, skip the click entirely.
         if (action.elementType === "radio" || action.elementType === "checkbox") {
@@ -443,7 +453,7 @@ export async function executePlannedActions(
           break;
         }
 
-        await loc.highlight();
+        await scrollAndHighlight(loc);
         await loc.fill(value);
 
         // Stabilize the target AFTER filling (element still in DOM) so the
@@ -477,7 +487,7 @@ export async function executePlannedActions(
       case "press": {
         if (!action.target) throw new Error("press missing target");
         const loc = resolveLocator(page, action.target).first();
-        await loc.highlight();
+        await scrollAndHighlight(loc);
         await loc.press(action.value ?? "Enter");
         await ensureNoHumanVerification(page);
 
@@ -495,10 +505,9 @@ export async function executePlannedActions(
           logWarn(`[Executor] Skipping assert — LLM generated no target (elementType: ${action.elementType ?? "unknown"}). Update the prompt or re-run to regenerate the plan.`);
           break;
         }
-        await resolveLocator(page, action.target).first().waitFor({
-          state: "visible",
-          timeout: 8000
-        });
+        const assertLoc = resolveLocator(page, action.target).first();
+        await assertLoc.waitFor({ state: "visible", timeout: 8000 });
+        await scrollAndHighlight(assertLoc);
         await ensureNoHumanVerification(page);
         break;
       }
