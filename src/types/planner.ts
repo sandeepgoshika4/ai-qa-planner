@@ -1,4 +1,4 @@
-export type PlannedActionType = "goto" | "click" | "fill" | "press" | "wait" | "done" | "assert";
+export type PlannedActionType = "goto" | "click" | "fill" | "selectOption" | "press" | "wait" | "done" | "assert";
 
 /**
  * Describes the UI element type the action targets.

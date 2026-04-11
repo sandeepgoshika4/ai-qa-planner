@@ -343,11 +343,45 @@ export async function executePlannedActions(
         break;
       }
 
+      case "selectOption": {
+        if (!action.target) throw new Error("selectOption missing target");
+        const value = action.valueKey ? dataSet[action.valueKey] : action.value;
+        if (value == null) throw new Error("selectOption missing value");
+        const loc = resolveLocator(page, action.target).first();
+        await loc.highlight();
+
+        // Try selecting by visible label first, then by value attribute
+        try {
+          await loc.selectOption({ label: value });
+        } catch {
+          await loc.selectOption({ value });
+        }
+
+        resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
+        await ensureNoHumanVerification(page);
+        break;
+      }
+
       case "fill": {
         if (!action.target) throw new Error("fill missing target");
         const value = action.valueKey ? dataSet[action.valueKey] : action.value;
         if (value == null) throw new Error("fill missing value");
         const loc = resolveLocator(page, action.target).first();
+
+        // If the target is a <select> element, fill() won't work — use selectOption instead.
+        const tagName = await loc.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
+        if (tagName === "select" || action.elementType === "select") {
+          logInfo(`[Executor] Target is a <select> — switching fill → selectOption for "${action.target}"`);
+          await loc.highlight();
+          try {
+            await loc.selectOption({ label: value });
+          } catch {
+            await loc.selectOption({ value });
+          }
+          resolved[i] = { ...resolved[i], action: "selectOption", target: await toStableSelector(page, action.target) };
+          await ensureNoHumanVerification(page);
+          break;
+        }
 
         await loc.highlight();
         await loc.fill(value);

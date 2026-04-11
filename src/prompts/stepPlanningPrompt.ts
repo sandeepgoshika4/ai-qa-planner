@@ -14,7 +14,7 @@ Return ONLY valid JSON in this exact format:
 {
   "actions": [
     {
-      "action": "goto | click | fill | press | wait | assert | done",
+      "action": "goto | click | fill | selectOption | press | wait | assert | done",
       "target": "optional locator",
       "value": "optional value",
       "valueKey": "optional dataset key",
@@ -35,8 +35,8 @@ Rules:
     input-text      → plain text input or textarea
     input-autocomplete → text input that shows dynamic suggestions after typing
     input-password  → password input
-    select          → native <select> dropdown
-    dropdown        → custom div/ul-based dropdown
+    select          → native <select> dropdown  ← use action: "selectOption" (NOT fill)
+    dropdown        → custom div/ul-based dropdown  ← use action: "click" to open, then "click" the option
     checkbox        → <input type=checkbox>
     radio           → <input type=radio>
     tab             → tab control (clicking reveals a panel)
@@ -55,6 +55,8 @@ Rules:
     text:Next
     role:button|Login
     selector:#identifierId
+- For native <select> elements (elementType: "select"), ALWAYS use action: "selectOption" with the visible option label as the value. Never use "fill" on a <select>.
+- For custom dropdowns (elementType: "dropdown"), use action: "click" to open the dropdown, then action: "click" on the desired option.
 - Use valueKey for dataset values like username and password.
 - If the page shows an unexpected security, authentication, bot-detection,
   unsupported-browser, access denied, captcha, or interstitial message,
