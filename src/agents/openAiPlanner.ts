@@ -13,9 +13,8 @@ export class OpenAiPlanner {
   async planStep(step: ManualTestStep, page: PageContext, dataSet: Record<string, string>): Promise<StepPlan> {
     const filtered = filterPageContext(page);
     logInfo(
-      `[Planner] Page context filtered: ${filtered._stats.totalExtracted} total → ` +
-      `${filtered._stats.visibleInteractive} visible+interactive → ` +
-      `${filtered._stats.sentToLlm} sent to LLM`
+      `[Planner] Page context: ${filtered._stats.totalExtracted} total → ` +
+      `${filtered._stats.interactiveSent} interactive + ${filtered._stats.contextSent} context sent to LLM`
     );
 
     const response = await this.client.chat.completions.create({

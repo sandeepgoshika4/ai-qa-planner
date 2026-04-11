@@ -89,7 +89,7 @@ ${JSON.stringify(failedAction, null, 2)}
 ## Error
 ${error}
 
-## Current page context (live snapshot — ${pageContext._stats.sentToLlm} visible interactive elements)
+## Current page context (live snapshot — ${pageContext._stats.interactiveSent} interactive + ${pageContext._stats.contextSent} context elements)
 URL: ${pageContext.url}
 Title: ${pageContext.title}
 Elements:

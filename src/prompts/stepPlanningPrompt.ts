@@ -81,7 +81,7 @@ ${stepText}
 Expected result:
 ${expectedResult ?? "Not specified"}
 
-Current page context (${pageContext._stats.sentToLlm} visible interactive elements of ${pageContext._stats.totalExtracted} total):
+Current page context (${pageContext._stats.interactiveSent} interactive + ${pageContext._stats.contextSent} context elements; ${pageContext._stats.totalExtracted} total on page):
 URL: ${pageContext.url}
 Title: ${pageContext.title}
 Elements:

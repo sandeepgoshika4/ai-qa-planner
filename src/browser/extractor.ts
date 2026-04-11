@@ -6,7 +6,12 @@ export async function extractPageContext(page: Page): Promise<PageContext> {
   const url = page.url();
   const dom = await page.content();
   const elements = await page.evaluate(() => {
-    const nodes = Array.from(document.querySelectorAll('input, button, a, select, textarea, [role="button"], [role="link"], [contenteditable="true"]'));
+    const nodes = Array.from(document.querySelectorAll(
+      // Interactive elements
+      'input, button, a, select, textarea, [role="button"], [role="link"], [contenteditable="true"],' +
+      // Contextual elements — headings, labels, alerts so LLM knows what page/section it is on
+      'h1, h2, h3, h4, h5, h6, label, [role="heading"], [role="alert"], [role="status"], [role="alertdialog"]'
+    ));
     return nodes.map((node, index) => {
       const el = node as HTMLElement;
       const tag = el.tagName.toLowerCase();
