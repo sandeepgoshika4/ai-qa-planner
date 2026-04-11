@@ -52,7 +52,7 @@ export class ActionHealer {
       const repairedAction = JSON.parse(text) as PlannedAction;
 
       // Basic sanity check — must be a valid action type
-      const validActions = ["goto", "click", "fill", "press", "wait", "assert", "done"];
+      const validActions = ["goto", "click", "fill", "selectOption", "press", "wait", "assert", "done"];
       if (!validActions.includes(repairedAction.action)) {
         logWarn(`[ActionHealer] LLM returned unknown action type: ${repairedAction.action}`);
         return null;
@@ -103,7 +103,7 @@ Avoid locators with long numeric IDs (they are dynamically generated and will ch
 
 Return ONLY this JSON structure — no markdown fences, no extra text:
 {
-  "action": "click | fill | press | wait | assert | goto | done",
+  "action": "click | fill | selectOption | press | wait | assert | goto | done",
   "target": "locator string",
   "value": "optional value",
   "valueKey": "optional dataset key",

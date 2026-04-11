@@ -17,8 +17,15 @@
  *    These tell the LLM WHAT PAGE / SECTION it is on and what each field
  *    is called — without them the LLM has no situational awareness.
  *
- * Both tiers are deduplicated and have their text truncated. The raw DOM
- * string is always excluded — too large and not needed for planning.
+ *  TIER 3 — Conditional (capped at MAX_CONDITIONAL_ELEMENTS, default 20)
+ *    Hidden-but-interactive elements whose visibility depends on other fields.
+ *    Examples: "Spouse Name" appears only when "Married" is selected,
+ *    "Tax ID" appears only when a specific account type is chosen.
+ *    Sent with visible:false so the LLM knows these exist but are not yet
+ *    rendered — it should still plan actions for them and the executor will
+ *    wait for them to appear before interacting.
+ *
+ * All tiers are deduplicated. The raw DOM string is always excluded.
  */
 
 import type { PageContext, PageElement } from "../types/pageContext.js";
@@ -45,6 +52,12 @@ export interface PlannerElement {
   currentValue?: string;
   /** Present and false when element is natively disabled — LLM should not target it. */
   enabled?: false;
+  /**
+   * Present and false when element is currently hidden but will appear after
+   * interacting with a trigger field (conditional / dependent field).
+   * The executor will wait for it to become visible before interacting.
+   */
+  visible?: false;
 }
 
 /**
@@ -59,15 +72,17 @@ export interface PlannerContext {
     totalExtracted: number;
     interactiveSent: number;
     contextSent: number;
+    conditionalSent: number;
     totalSent: number;
   };
 }
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-const MAX_INTERACTIVE_ELEMENTS = env.maxPlannerElements;   // default 60
-const MAX_CONTEXT_ELEMENTS     = 20;                        // headings, labels, alerts
-const MAX_TEXT_LENGTH          = 80;                        // chars before truncation
+const MAX_INTERACTIVE_ELEMENTS  = env.maxPlannerElements;   // default 60
+const MAX_CONTEXT_ELEMENTS      = 20;                        // headings, labels, alerts
+const MAX_CONDITIONAL_ELEMENTS  = 20;                        // hidden fields that appear on change
+const MAX_TEXT_LENGTH           = 80;                        // chars before truncation
 
 // ─── Tier 1: Interactive ──────────────────────────────────────────────────────
 
@@ -144,9 +159,36 @@ function isContextual(el: PageElement): boolean {
   return false;
 }
 
+// ─── Tier 3: Conditional (hidden dependent fields) ────────────────────────────
+
+/**
+ * Returns true for elements that are currently HIDDEN but are interactive and
+ * have enough identity to be useful in a plan.
+ *
+ * These are fields whose visibility is controlled by another field — e.g.
+ * "Spouse DOB" only shows when Marital Status = Married.
+ *
+ * Excluded from this tier:
+ *   - Elements already in Tier 1 (visible interactive)
+ *   - Disabled elements (permanently unavailable)
+ *   - Elements with no selector attributes or text (unidentifiable)
+ *   - type="hidden" native inputs (never shown to user)
+ */
+function isConditional(el: PageElement): boolean {
+  if (el.visible)   return false;  // already in Tier 1
+  if (!el.enabled)  return false;  // permanently disabled, not conditional
+  // Must be an interactive element type
+  if (!INTERACTIVE_TAGS.has(el.tag) &&
+      !(el.role && INTERACTIVE_ROLES.has(el.role.toLowerCase()))) return false;
+  // Must have at least one identifying attribute so the LLM can reference it
+  const hasIdentity = !!(el.idAttr || el.name || el.ariaLabel || el.placeholder || el.text?.trim());
+  if (!hasIdentity) return false;
+  return true;
+}
+
 // ─── Field shaping ────────────────────────────────────────────────────────────
 
-function toPlannedElement(el: PageElement, kind: "interactive" | "context"): PlannerElement {
+function toPlannedElement(el: PageElement, kind: "interactive" | "context", hidden = false): PlannerElement {
   const out: PlannerElement = { tag: el.tag, selector: el.selector, kind };
 
   const text = el.text?.trim();
@@ -162,6 +204,8 @@ function toPlannedElement(el: PageElement, kind: "interactive" | "context"): Pla
   if (el.currentValue)          out.currentValue = el.currentValue;
   // Only flag when explicitly disabled — absence means enabled (saves tokens)
   if (!el.enabled)              out.enabled      = false;
+  // Flag conditional hidden fields — executor will wait for them to appear
+  if (hidden)                   out.visible      = false;
 
   return out;
 }
@@ -206,18 +250,33 @@ export function filterPageContext(
     .slice(0, MAX_CONTEXT_ELEMENTS)
     .map((el) => toPlannedElement(el, "context"));
 
-  // ── Combine: interactive first, then context ─────────────────────────────────
-  const elements = [...interactive, ...contextual];
+  // ── Tier 3: Conditional (hidden dependent fields) ────────────────────────────
+  // Fields currently hidden but expected to appear after a trigger interaction.
+  // Sorted same as interactive so highest-value hidden fields come first.
+  const conditional = ctx.elements
+    .filter(isConditional)
+    .sort((a, b) => interactivePriority(a) - interactivePriority(b))
+    .filter((el) => {
+      if (seenSelectors.has(el.selector)) return false;
+      seenSelectors.add(el.selector);
+      return true;
+    })
+    .slice(0, MAX_CONDITIONAL_ELEMENTS)
+    .map((el) => toPlannedElement(el, "interactive", /* hidden */ true));
+
+  // ── Combine: interactive → context → conditional ─────────────────────────────
+  const elements = [...interactive, ...contextual, ...conditional];
 
   return {
     url: ctx.url,
     title: ctx.title,
     elements,
     _stats: {
-      totalExtracted:  total,
-      interactiveSent: interactive.length,
-      contextSent:     contextual.length,
-      totalSent:       elements.length
+      totalExtracted:   total,
+      interactiveSent:  interactive.length,
+      contextSent:      contextual.length,
+      conditionalSent:  conditional.length,
+      totalSent:        elements.length
     }
   };
 }

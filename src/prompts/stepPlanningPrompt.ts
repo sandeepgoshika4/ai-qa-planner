@@ -64,12 +64,25 @@ Rules:
   unsupported-browser, access denied, captcha, or interstitial message,
   DO NOT continue normal automation. Return stopExecution: true with a note.
 - assert actions MUST always have a target — never emit an assert without one. If you cannot identify a specific element to assert, omit the assert entirely.
+- HOW TO END A STEP — always finish your plan with these two actions in order:
+    1. assert  → verify the expected result is visible on the page.
+               Use a specific element from the page context that confirms the step succeeded
+               (e.g. a success message, a new page heading, a field that changed value).
+               If no useful assertion target exists, skip the assert.
+    2. done    → signals the step is complete. ALWAYS include this as the final action.
+               No target, no value needed: { "action": "done" }
+  Never omit the done action. It tells the runner the step finished successfully.
 - Elements in the page context may include a "checked" field (radio/checkbox) and "currentValue" field (inputs/selects).
   Before generating a click/fill for a radio, checkbox, or select:
     • If a radio is already checked (checked: true) and the step wants it selected — SKIP the action.
     • If a checkbox already matches the desired state — SKIP the action.
     • If an input already contains the required value — SKIP the fill action.
   Never click a radio or checkbox that is already in the desired state.
+- Some elements have "visible": false — these are CONDITIONAL fields that are currently hidden
+  but will appear automatically after you interact with a trigger element (e.g. selecting a value
+  from a dropdown reveals a dependent input). You SHOULD still plan actions for these elements.
+  The executor will wait for them to become visible before interacting with them.
+  Do NOT skip or omit actions targeting visible:false elements.
 - Always keep the plan minimal and valid.
 
 Available dataset keys:
@@ -78,7 +91,7 @@ ${JSON.stringify(dataKeys, null, 2)}
 Manual step:
 ${stepText}
 
-Expected result:
+Expected result (use this to write the assert action — find a visible element that confirms this outcome):
 ${expectedResult ?? "Not specified"}
 
 Current page context (${pageContext._stats.interactiveSent} interactive + ${pageContext._stats.contextSent} context elements; ${pageContext._stats.totalExtracted} total on page):

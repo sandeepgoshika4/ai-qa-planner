@@ -13,11 +13,20 @@ import { FatalExecutionError, isFatalError } from "../errors/fatalExecutionError
 import { detectHumanVerification } from "../detectors/detectHumanVerification.js";
 
 /**
- * Scroll the element into the visible viewport, then highlight it.
- * Silently ignores scroll/highlight errors (e.g. detached element) so they
- * never block the actual interaction that follows.
+ * Wait for the element to be visible, scroll it into the viewport, then highlight it.
+ *
+ * The visibility wait handles CONDITIONAL fields — elements that are currently
+ * hidden because their visibility depends on another field's value (e.g. a
+ * "Spouse Name" input that only appears after selecting Marital Status = Married).
+ * The executor plans these actions up-front; this wait lets the page reveal them.
+ *
+ * Silently ignores all errors so a scroll/highlight failure never blocks the
+ * actual interaction that follows.
  */
 async function scrollAndHighlight(loc: Locator): Promise<void> {
+  // Wait up to 8 s for conditional fields to appear after a trigger action.
+  // For already-visible elements this resolves instantly.
+  await loc.waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
   await loc.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {});
   await loc.highlight().catch(() => {});
 }

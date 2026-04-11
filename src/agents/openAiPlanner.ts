@@ -14,7 +14,9 @@ export class OpenAiPlanner {
     const filtered = filterPageContext(page);
     logInfo(
       `[Planner] Page context: ${filtered._stats.totalExtracted} total → ` +
-      `${filtered._stats.interactiveSent} interactive + ${filtered._stats.contextSent} context sent to LLM`
+      `${filtered._stats.interactiveSent} interactive + ` +
+      `${filtered._stats.contextSent} context + ` +
+      `${filtered._stats.conditionalSent} conditional(hidden) sent to LLM`
     );
 
     const response = await this.client.chat.completions.create({
