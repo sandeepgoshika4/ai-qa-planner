@@ -51,6 +51,36 @@ async function ensureNoHumanVerification(page: Page): Promise<void> {
  *  3. Last resort: search every <select> on the page for an option that matches
  *     the desired label or value.
  */
+/**
+ * Fill an input robustly.
+ *
+ * Strategy:
+ *  1. Try the standard Playwright fill() — works for most plain inputs.
+ *  2. If the value didn't stick (masked/date-picker inputs ignore fill),
+ *     fall back to click → Ctrl+A → pressSequentially (key-by-key),
+ *     then fire Angular-compatible input/change/blur events via JS.
+ */
+async function robustFill(loc: Locator, value: string): Promise<void> {
+  // Attempt 1: standard fill
+  await loc.fill(value).catch(() => {});
+
+  const actual = await loc.inputValue().catch(() => "");
+  if (actual === value) return; // success — done
+
+  // Attempt 2: masked / Angular input — type character by character
+  logInfo(`[Executor] fill() didn't stick (got "${actual}"), falling back to pressSequentially`);
+  await loc.click().catch(() => {});
+  await loc.page().keyboard.press("Control+a").catch(() => {});
+  await loc.pressSequentially(value, { delay: 40 });
+
+  // Fire Angular/React change-detection events
+  await loc.evaluate((el) => {
+    el.dispatchEvent(new Event("input",  { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur",   { bubbles: true }));
+  }).catch(() => {});
+}
+
 async function robustSelectOption(page: Page, target: string, value: string): Promise<void> {
   const loc = resolveLocator(page, target).first();
   await scrollAndHighlight(loc);
@@ -465,7 +495,7 @@ export async function executePlannedActions(
         }
 
         await scrollAndHighlight(loc);
-        await loc.fill(value);
+        await robustFill(loc, value);
 
         // Stabilize the target AFTER filling (element still in DOM) so the
         // cached selector survives the next page load even if the id is random.
