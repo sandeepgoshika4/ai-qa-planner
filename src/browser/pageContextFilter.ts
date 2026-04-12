@@ -49,6 +49,8 @@ export interface PlannerElement {
   role?: string;
   href?: string;
   checked?: boolean;
+  /** The VALUE attribute of a radio/checkbox option (e.g. "Yes", "No"). Use this to distinguish options. */
+  radioValue?: string;
   currentValue?: string;
   /** Present and false when element is natively disabled — LLM should not target it. */
   enabled?: false;
@@ -201,6 +203,7 @@ function toPlannedElement(el: PageElement, kind: "interactive" | "context", hidd
   if (el.href)        out.href        = el.href;
 
   if (el.checked !== undefined) out.checked      = el.checked;
+  if (el.radioValue)            out.radioValue   = el.radioValue;
   if (el.currentValue)          out.currentValue = el.currentValue;
   // Only flag when explicitly disabled — absence means enabled (saves tokens)
   if (!el.enabled)              out.enabled      = false;

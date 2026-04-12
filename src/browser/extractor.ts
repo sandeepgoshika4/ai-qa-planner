@@ -1,7 +1,57 @@
 import type { Page } from "playwright";
 import type { PageContext } from "../types/pageContext.js";
 
+/**
+ * Scroll all scrollable containers (window + overflow containers) to their
+ * bottom, then back to the top.  This forces Angular / React components that
+ * use IntersectionObserver or *ngIf-on-scroll to render their off-screen
+ * children so the extractor can capture them.
+ */
+async function revealAllElements(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    // Collect every scrollable container on the page
+    const containers: Array<{ el: Element | null; max: number }> = [];
+
+    // Window scroll
+    const winMax = document.documentElement.scrollHeight - window.innerHeight;
+    if (winMax > 10) containers.push({ el: null, max: winMax });
+
+    // Overflow containers (modals, panels, sidebars, etc.)
+    document.querySelectorAll("*").forEach((node) => {
+      const el = node as HTMLElement;
+      const style = window.getComputedStyle(el);
+      const oy = style.overflowY;
+      if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 20) {
+        containers.push({ el, max: el.scrollHeight - el.clientHeight });
+      }
+    });
+
+    // Scroll each container to bottom, wait, then restore to top
+    for (const { el, max } of containers) {
+      if (el) {
+        el.scrollTop = max;
+      } else {
+        window.scrollTo(0, max);
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+
+    // Restore everything to top so the page looks normal after extraction
+    for (const { el } of containers) {
+      if (el) el.scrollTop = 0;
+      else     window.scrollTo(0, 0);
+    }
+
+    // Small settle wait after restoring scroll
+    await new Promise((r) => setTimeout(r, 100));
+  });
+}
+
 export async function extractPageContext(page: Page): Promise<PageContext> {
+  // Scroll through all containers first so off-screen / lazy-rendered
+  // elements are added to the DOM before we query them.
+  await revealAllElements(page).catch(() => {/* non-fatal */});
+
   const title = await page.title();
   const url = page.url();
   const dom = await page.content();
@@ -56,6 +106,37 @@ export async function extractPageContext(page: Page): Promise<PageContext> {
       const isValueBearing =
         tag === "select" || tag === "textarea" || (tag === "input" && !isCheckable);
 
+      // For radio/checkbox capture the VALUE attribute (e.g. "Yes"/"No"/"true"/"false")
+      // so we can build input[name="X"][value="Y"] selectors.
+      const radioValue = isCheckable ? (el as HTMLInputElement).getAttribute("value") ?? undefined : undefined;
+
+      // ── Selector priority ───────────────────────────────────────────────────
+      // Angular/framework components often append random numbers to IDs
+      // (e.g. "governmentIDToggle94942878874").  Using these IDs means the
+      // selector breaks on every new page load.  Detect them and skip.
+      const isRandomId = id ? /\d{6,}$/.test(id) : false;
+
+      if (isRandomId) {
+        // Prefer name+value for radio/checkbox (most stable), then name alone
+        if (isCheckable && name && radioValue)
+          selector = `input[name="${name}"][value="${radioValue}"]`;
+        else if (name)
+          selector = `${tag}[name="${name}"]`;
+        else if (aria)
+          selector = `${tag}[aria-label="${aria}"]`;
+        else if (placeholder)
+          selector = `${tag}[placeholder="${placeholder}"]`;
+        else if (shortText)
+          selector = `text:${shortText}`;
+        else
+          selector = `#${id}`; // random id as absolute last resort
+      } else if (isCheckable && name && radioValue) {
+        // Even for non-random IDs, prefer name+value for radio/checkbox —
+        // it's more descriptive and survives DOM re-renders
+        selector = `input[name="${name}"][value="${radioValue}"]`;
+      }
+      // else keep selector already set above (id / name / aria / placeholder / text / tag)
+
       return {
         elementId: `el_${index + 1}`,
         tag,
@@ -74,6 +155,7 @@ export async function extractPageContext(page: Page): Promise<PageContext> {
           rect.height > 0,
         enabled: !el.hasAttribute("disabled"),
         ...(isCheckable   && { checked:      (inputEl as HTMLInputElement).checked }),
+        ...(isCheckable && radioValue && { radioValue }),
         ...(isValueBearing && (inputEl as HTMLInputElement).value &&
                               { currentValue: (inputEl as HTMLInputElement).value }),
       };

@@ -12,6 +12,7 @@ export interface PageElement {
   visible: boolean;
   enabled: boolean;
   checked?: boolean;        // true/false for radio and checkbox inputs
+  radioValue?: string;      // the VALUE attribute of a radio/checkbox (e.g. "Yes", "No", "true")
   currentValue?: string;    // current value for text inputs and selects
 }
 
