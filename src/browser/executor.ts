@@ -408,7 +408,30 @@ export async function executePlannedActions(
 
       case "click": {
         if (!action.target) throw new Error("click missing target");
-        const loc = resolveLocator(page, action.target).first();
+
+        // When the LLM guesses "text:Log in" for a button, getByText matches
+        // headings/labels before the actual button.  Refine to button-scoped
+        // selectors when elementType is "button" and the target is a text: selector.
+        let clickTarget = action.target;
+        if (action.elementType === "button" && action.target.startsWith("text:")) {
+          const btnText = action.target.replace(/^text:/, "").trim();
+          // Try button:has-text first, then input[value=], then role=button
+          const candidates = [
+            `button:has-text("${btnText}")`,
+            `input[value="${btnText}"]`,
+            `[role="button"]:has-text("${btnText}")`,
+          ];
+          for (const c of candidates) {
+            const count = await page.locator(c).count().catch(() => 0);
+            if (count > 0) {
+              logInfo(`[Executor] Refined button target "${action.target}" → "${c}"`);
+              clickTarget = c;
+              break;
+            }
+          }
+        }
+
+        const loc = resolveLocator(page, clickTarget).first();
         await scrollAndHighlight(loc);
 
         // For radio/checkbox: if already in the desired state, skip the click entirely.
