@@ -656,7 +656,7 @@ export async function executePlannedActions(
                              !stepStartTitle.includes(currentTitle);
 
         if (urlChanged || titleChanged) {
-          throw new Error(
+          throw new FatalExecutionError(
             `[Out of Context] Page changed during step execution — ` +
             `expected "${stepStartTitle}" (${stripQuery(stepStartUrl)}) ` +
             `but now on "${currentTitle}" (${stripQuery(currentUrl)}). ` +
@@ -679,7 +679,7 @@ export async function executePlannedActions(
 
         // ── Post-heal: healer says page doesn't match the step ────────────────
         if (healed.action === "out_of_context") {
-          throw new Error(
+          throw new FatalExecutionError(
             `[Out of Context] Healer determined the current page does not match ` +
             `the step context and cannot execute the action. ` +
             `Reason: ${healed.explanation ?? "page context mismatch"}`

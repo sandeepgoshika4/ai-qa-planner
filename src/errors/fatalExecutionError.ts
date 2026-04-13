@@ -58,7 +58,7 @@ export function isFatalError(errMsg: string, pageTitle?: string): boolean {
  * indicate an unrecoverable system/API error.
  */
 const DOM_ERROR_TEXT_RE =
-  /system\s*error|service\s*(is\s*)?unavailable|something\s*went\s*wrong|api\s*(error|failure|failed)|downstream\s*service|server\s*error|internal\s*error|unexpected\s*error|application\s*error|oops[,!.\s]/i;
+  /system\s*error|system\s*unavailable|service\s*(is\s*)?unavailable|something\s*went\s*wrong|api\s*(error|failure|failed)|downstream\s*service|server\s*error|internal\s*error|unexpected\s*error|application\s*error|unavailable\s*at\s*this\s*time|oops[,!.\s]/i;
 
 /**
  * Scan the live DOM for visible error banners, alerts, or messages that
