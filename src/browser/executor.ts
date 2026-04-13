@@ -9,7 +9,7 @@ import { toStableSelector } from "./locatorStabilizer.js";
 import { ActionHealer } from "../agents/actionHealer.js";
 import { VisualLocator } from "../agents/visualLocator.js";
 import { HumanVerificationRequiredError } from "../errors/humanVerificationError.js";
-import { FatalExecutionError, isFatalError } from "../errors/fatalExecutionError.js";
+import { FatalExecutionError, isFatalError, detectPageError } from "../errors/fatalExecutionError.js";
 import { detectHumanVerification } from "../detectors/detectHumanVerification.js";
 
 /**
@@ -570,10 +570,22 @@ export async function executePlannedActions(
         let pageTitle: string | undefined;
         try { pageTitle = await page.title(); } catch { /* ignore */ }
 
+        const label = `${action.action}${action.target ? ` -> ${action.target}` : ""}`;
+
         if (isFatalError(errMsg, pageTitle)) {
-          const label = `${action.action}${action.target ? ` -> ${action.target}` : ""}`;
           throw new FatalExecutionError(
             `[Fatal] Step failed — system/service error on action "${label}": ${errMsg}`,
+            err as Error
+          );
+        }
+
+        // Check the live DOM for visible system-error / API-failure banners.
+        // Angular SPAs render these as components — the page title stays the same
+        // even when a "System Error" message is displayed on screen.
+        const domError = await detectPageError(page);
+        if (domError) {
+          throw new FatalExecutionError(
+            `[Fatal] System error detected on page while executing "${label}": ${domError}`,
             err as Error
           );
         }
