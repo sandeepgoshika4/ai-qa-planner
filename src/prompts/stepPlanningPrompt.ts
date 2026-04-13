@@ -23,7 +23,8 @@ Return ONLY valid JSON in this exact format:
       "elementType": "button | link | menuitem | input-text | input-autocomplete | input-password | select | dropdown | checkbox | radio | tab | accordion | table-row | label | other",
       "explanation": "optional short explanation",
       "notes": "optional notes for logs or manual intervention",
-      "stopExecution": true
+      "stopExecution": true,
+      "blind": false
     }
   ]
 }
@@ -83,6 +84,21 @@ Rules:
   from a dropdown reveals a dependent input). You SHOULD still plan actions for these elements.
   The executor will wait for them to become visible before interacting with them.
   Do NOT skip or omit actions targeting visible:false elements.
+- BLIND ACTIONS — If the step text mentions a field or element that does NOT exist in the
+  provided page context, it is likely a CONDITIONAL/DYNAMIC field that will appear at runtime
+  after an earlier action (e.g. selecting a dropdown value reveals a dependent input, clicking
+  a toggle shows hidden fields, or clicking a radio reveals additional options).
+  Still plan the action and set "blind": true. Use the field label/name from the step text as
+  the target (e.g. "Source of Income", "Spouse Name"). The executor will re-extract the page
+  after earlier actions have executed and resolve the correct selector at runtime.
+  This applies to ALL action types: fill, click, selectOption, press.
+  Examples of blind actions:
+    { "action": "fill", "target": "Source of Income", "value": "Pension", "elementType": "input-text", "blind": true }
+    { "action": "click", "target": "Spouse Info", "elementType": "checkbox", "blind": true }
+    { "action": "selectOption", "target": "Sub Category", "value": "Option A", "elementType": "select", "blind": true }
+- IMPORTANT: Every distinct sub-action mentioned in the step text MUST appear in your plan.
+  If the step says "fill X, select Y, and click Add", your plan MUST include actions for ALL
+  of them — do not stop early or omit trailing actions. Use blind: true for fields not in context.
 - Always keep the plan minimal and valid.
 
 Available dataset keys:

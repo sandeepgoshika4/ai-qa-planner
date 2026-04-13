@@ -377,6 +377,131 @@ async function handleAutocomplete(page: Page, fillValue: string): Promise<string
   return null;
 }
 
+// ─── Blind action resolution ────────────────────────────────────────────────
+
+/**
+ * Resolve a blind action's target (a human-readable field name like
+ * "Source of Income") into a real CSS selector by re-extracting the live DOM
+ * and matching against element attributes.
+ *
+ * Matching priority:
+ *   1. name attribute    (exact or partial, case-insensitive)
+ *   2. aria-label        (exact or partial, case-insensitive)
+ *   3. placeholder       (exact or partial, case-insensitive)
+ *   4. associated <label> text (via DOM scan)
+ *   5. element text / id
+ *
+ * Returns the matching element's selector, or null if no match found.
+ */
+async function resolveBlindTarget(
+  page: Page,
+  fieldName: string,
+  elementType?: ElementType
+): Promise<string | null> {
+  // Re-extract fresh page context — by now earlier actions have executed
+  // and the conditional field should be in the DOM.
+  const freshCtx = await extractPageContext(page);
+  const elements = freshCtx.elements;
+  const lower = fieldName.toLowerCase().trim();
+  if (!lower) return null;
+
+  // ── Filter candidates by elementType ─────────────────────────────────────
+  let candidates = elements.filter((e) => e.visible && e.enabled !== false);
+
+  if (elementType === "radio" || elementType === "checkbox") {
+    candidates = candidates.filter((e) =>
+      e.tag === "input" || e.role === "radio" || e.role === "checkbox"
+    );
+  } else if (elementType === "select" || elementType === "dropdown") {
+    candidates = candidates.filter((e) =>
+      e.tag === "select" || e.role === "combobox" || e.role === "listbox"
+    );
+  } else if (elementType?.startsWith("input")) {
+    candidates = candidates.filter((e) => ["input", "textarea"].includes(e.tag));
+  } else if (elementType === "button") {
+    candidates = candidates.filter((e) =>
+      e.tag === "button" || e.role === "button" || e.tag === "a"
+    );
+  }
+
+  // ── Attribute matching: name, aria-label, placeholder, text ──────────────
+  const match = candidates.find(
+    (e) =>
+      (e.name ?? "").toLowerCase().includes(lower) ||
+      lower.includes((e.name ?? "").toLowerCase()) ||
+      (e.ariaLabel ?? "").toLowerCase().includes(lower) ||
+      lower.includes((e.ariaLabel ?? "").toLowerCase()) ||
+      (e.placeholder ?? "").toLowerCase().includes(lower) ||
+      lower.includes((e.placeholder ?? "").toLowerCase()) ||
+      (e.text ?? "").toLowerCase().includes(lower) ||
+      (e.idAttr ?? "").toLowerCase().includes(lower.replace(/\s+/g, ""))
+  );
+
+  if (match) return match.selector;
+
+  // ── DOM label scan: find <label> whose text matches, then get its input ──
+  const labelSelector = await page.evaluate(
+    ({ name, elType }) => {
+      const normalise = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+      const target = normalise(name);
+
+      // Find all labels matching the field name
+      const labels = Array.from(document.querySelectorAll("label"));
+      for (const label of labels) {
+        const text = normalise(label.textContent ?? "");
+        if (!text.includes(target) && !target.includes(text)) continue;
+
+        // <label><input>text</label> pattern
+        const wrappedInput = label.querySelector("input, select, textarea");
+        if (wrappedInput) return buildSelector(wrappedInput as HTMLElement, elType);
+
+        // <label for="id">text</label> pattern
+        const forId = label.getAttribute("for");
+        if (forId) {
+          const linked = document.getElementById(forId);
+          if (linked) return buildSelector(linked, elType);
+        }
+
+        // Sibling input — label followed by input
+        const next = label.nextElementSibling;
+        if (next && ["INPUT", "SELECT", "TEXTAREA"].includes(next.tagName)) {
+          return buildSelector(next as HTMLElement, elType);
+        }
+
+        // Parent contains both label and input
+        const parent = label.parentElement;
+        if (parent) {
+          const input = parent.querySelector("input, select, textarea");
+          if (input && input !== label) return buildSelector(input as HTMLElement, elType);
+        }
+      }
+      return null;
+
+      function buildSelector(el: HTMLElement, type: string | undefined): string {
+        const tag = el.tagName.toLowerCase();
+        const id = el.getAttribute("id");
+        const elName = el.getAttribute("name");
+        const aria = el.getAttribute("aria-label");
+        const placeholder = el.getAttribute("placeholder");
+        const inputType = el.getAttribute("type")?.toLowerCase();
+
+        // For radio/checkbox, prefer name+value
+        if ((type === "radio" || type === "checkbox") && elName && (el as HTMLInputElement).value) {
+          return `input[type="${inputType}"][name="${elName}"][value="${(el as HTMLInputElement).value}"]`;
+        }
+        if (id && !/\d{6,}$/.test(id)) return `#${id}`;
+        if (elName) return `${tag}[name="${elName}"]`;
+        if (aria)   return `${tag}[aria-label="${aria}"]`;
+        if (placeholder) return `${tag}[placeholder="${placeholder}"]`;
+        return tag;
+      }
+    },
+    { name: fieldName, elType: elementType }
+  ).catch(() => null);
+
+  return labelSelector;
+}
+
 // ─── Main executor ────────────────────────────────────────────────────────────
 
 /**
@@ -412,6 +537,46 @@ export async function executePlannedActions(
     if (resolved[i].stopExecution) {
       logInfo("Execution stopped by planner due to blocked/unexpected state.");
       return resolved;
+    }
+
+    // ── Blind action resolution ───────────────────────────────────────────────
+    // When the LLM planned an action for a field not in the page context
+    // (conditional/dynamic field), resolve it now against the live DOM.
+    if (resolved[i].blind && resolved[i].target) {
+      const blindTarget = resolved[i].target!;
+      logInfo(`[Executor] Blind action: "${resolved[i].action} → ${blindTarget}" [${resolved[i].elementType ?? "?"}] — resolving against live DOM...`);
+
+      // Step 1: Try to find the element by name/label/aria matching
+      const foundSelector = await resolveBlindTarget(page, blindTarget, resolved[i].elementType);
+
+      if (foundSelector) {
+        logInfo(`[Executor] Blind resolved: "${blindTarget}" → "${foundSelector}"`);
+        resolved[i] = { ...resolved[i], target: foundSelector, blind: false };
+      } else {
+        // Step 2: Fall back to ActionHealer with fresh page context
+        logInfo(`[Executor] Blind target "${blindTarget}" not found by name — calling ActionHealer...`);
+        try {
+          const freshCtx = await extractPageContext(page);
+          const healed = await healer.repairAction(
+            resolved[i],
+            `Blind action — field "${blindTarget}" was not in page context at plan time. Resolve the correct selector from the current live page.`,
+            freshCtx,
+            stepDescription,
+            resolved.slice(0, i)
+          );
+
+          if (healed && healed.action !== "out_of_context" && healed.target) {
+            logInfo(`[Executor] Blind healed: "${blindTarget}" → "${healed.target}" [${healed.elementType ?? "?"}]`);
+            resolved[i] = { ...healed, blind: false };
+          } else {
+            logWarn(`[Executor] ActionHealer could not resolve blind target "${blindTarget}" — attempting with original`);
+            resolved[i] = { ...resolved[i], blind: false };
+          }
+        } catch (healErr) {
+          logWarn(`[Executor] Blind heal failed: ${(healErr as Error).message} — attempting with original target`);
+          resolved[i] = { ...resolved[i], blind: false };
+        }
+      }
     }
 
     let healAttempt = 0;

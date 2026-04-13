@@ -32,6 +32,15 @@ export interface PlannedAction {
   explanation?: string;
   notes?: string;
   stopExecution?: boolean;
+  /**
+   * True when the LLM planned this action for a field NOT present in the page
+   * context — typically a conditional/dynamic field that will appear after an
+   * earlier action (e.g. selecting a dropdown value reveals a dependent input).
+   *
+   * The executor will re-extract the page, attempt to match the target by
+   * name/label/aria/placeholder, and fall back to ActionHealer if needed.
+   */
+  blind?: boolean;
 }
 
 export interface StepPlan {

@@ -5,7 +5,7 @@ import { filterPageContext } from "../browser/pageContextFilter.js";
 import type { ManualTestStep } from "../types/manualTest.js";
 import type { PageContext } from "../types/pageContext.js";
 import type { StepPlan } from "../types/planner.js";
-import { logInfo } from "../utils/logger.js";
+import { logInfo, logWarn } from "../utils/logger.js";
 
 export class OpenAiPlanner {
   private client = makeLlmClient();
@@ -39,6 +39,14 @@ export class OpenAiPlanner {
 
     const text = response.choices[0]?.message?.content?.trim() ?? "";
     const parsed = JSON.parse(text) as { actions: StepPlan["actions"] };
+
+    if (parsed.actions.length > env.maxAgentActionsPerStep) {
+      logWarn(
+        `[Planner] ⚠ Truncating ${parsed.actions.length} actions to ${env.maxAgentActionsPerStep} ` +
+        `(increase MAX_AGENT_ACTIONS_PER_STEP to allow more)`
+      );
+    }
+
     return {
       manualStepId: step.id,
       manualStepAction: step.action,
