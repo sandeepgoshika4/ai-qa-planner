@@ -583,16 +583,36 @@ export async function executePlannedActions(
         if (action.elementType === "input-autocomplete") {
           const suggestionSelector = await handleAutocomplete(page, value);
           if (suggestionSelector) {
-            // Skip the next action if it's a click or press that was the LLM's
-            // strategy for confirming the autocomplete (now handled inline).
-            if (i + 1 < resolved.length &&
-                (resolved[i + 1].action === "click" || resolved[i + 1].action === "press")) {
-              logInfo(`[Executor] Autocomplete handled — skipping next "${resolved[i + 1].action}" action`);
-              resolved[i + 1] = {
-                ...resolved[i + 1],
-                notes: `${resolved[i + 1].notes ?? ""} [auto-handled by autocomplete]`.trim(),
-                _handled: true
-              } as PlannedAction & { _handled?: boolean };
+            // Skip the next click/press that confirms the autocomplete selection.
+            // The LLM sometimes inserts a "wait" action between the fill and the
+            // confirming click — scan ahead past wait actions to find it.
+            // IMPORTANT: only skip clicks that look like autocomplete confirmations
+            // (elementType "menuitem" or target contains the typed value), NOT
+            // unrelated buttons like "Next" / "Continue".
+            const waitIndices: number[] = [];
+            for (let j = i + 1; j < resolved.length && j <= i + 3; j++) {
+              if (resolved[j].action === "wait") {
+                waitIndices.push(j);
+                continue;
+              }
+              if (resolved[j].action === "click" || resolved[j].action === "press") {
+                const isAutocompleteConfirm =
+                  resolved[j].elementType === "menuitem" ||
+                  (resolved[j].target?.toLowerCase().includes(value.toLowerCase()) ?? false);
+                if (isAutocompleteConfirm) {
+                  logInfo(`[Executor] Autocomplete handled — skipping "${resolved[j].action}" action at index ${j}`);
+                  resolved[j] = {
+                    ...resolved[j],
+                    notes: `${resolved[j].notes ?? ""} [auto-handled by autocomplete]`.trim(),
+                    _handled: true
+                  } as PlannedAction & { _handled?: boolean };
+                  // Also mark intermediate wait actions as handled
+                  for (const wi of waitIndices) {
+                    resolved[wi] = { ...resolved[wi], _handled: true } as PlannedAction & { _handled?: boolean };
+                  }
+                }
+              }
+              break; // stop after finding the first non-wait action
             }
           } else {
             logWarn(`[Executor] Autocomplete suggestion for "${value}" not found — proceeding without selection`);
@@ -791,8 +811,8 @@ export async function executePlannedActions(
       }
     } // end heal-retry while
 
-    // Skip actions that were already handled inline (e.g. autocomplete click)
-    if ((resolved[i + 1] as (PlannedAction & { _handled?: boolean }) | undefined)?._handled) {
+    // Skip actions that were already handled inline (e.g. autocomplete wait + click)
+    while ((resolved[i + 1] as (PlannedAction & { _handled?: boolean }) | undefined)?._handled) {
       logInfo(`[Executor] Skipping next action — already handled inline`);
       i++;
     }
