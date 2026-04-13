@@ -86,14 +86,22 @@ export async function extractPageContext(page: Page): Promise<PageContext> {
 
       // ── Selector priority ───────────────────────────────────────────────────
       // 1. Stable attribute selectors  (id, name, aria-label, placeholder)
-      // 2. Text content fallback       — produces unique, human-readable locators
+      // 2. submit/button/reset inputs  — use value attribute as label text
+      //    e.g. <input type="submit" value="Next"> → input[value="Next"]
+      // 3. Text content fallback       — produces unique, human-readable locators
       //    for custom components that lack stable attributes (e.g. div.bttn-icon-link)
-      // 3. Bare tag                    — last resort (will be deduplicated in filter)
+      // 4. Bare tag                    — last resort (will be deduplicated in filter)
+      const inputType = el.getAttribute("type")?.toLowerCase();
+      const inputValue = (inputType === "submit" || inputType === "button" || inputType === "reset")
+        ? el.getAttribute("value") ?? ""
+        : "";
+
       let selector: string;
       if (id)                          selector = `#${id}`;
       else if (name)                   selector = `${tag}[name="${name}"]`;
       else if (aria)                   selector = `${tag}[aria-label="${aria}"]`;
       else if (placeholder)            selector = `${tag}[placeholder="${placeholder}"]`;
+      else if (inputValue)             selector = `input[value="${inputValue}"]`;
       else if (shortText)              selector = `text:${shortText}`;
       else                             selector = tag;
 
@@ -101,8 +109,7 @@ export async function extractPageContext(page: Page): Promise<PageContext> {
       const rect  = el.getBoundingClientRect();
 
       const inputEl     = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-      const type        = el.getAttribute("type")?.toLowerCase();
-      const isCheckable = type === "radio" || type === "checkbox";
+      const isCheckable = inputType === "radio" || inputType === "checkbox";
       const isValueBearing =
         tag === "select" || tag === "textarea" || (tag === "input" && !isCheckable);
 
