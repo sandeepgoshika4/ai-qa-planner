@@ -29,6 +29,37 @@ function stripQuery(url: string): string {
   catch { return url; }
 }
 
+/**
+ * After a click or press, detect whether the page is navigating (URL changed)
+ * and, if so, wait for the new page to fully load.
+ *
+ * For non-navigating clicks (radio, dropdown, accordion) this adds only
+ * ~150ms of overhead (one short wait + URL comparison).
+ */
+async function waitForNavigationIfNeeded(page: Page, urlBefore: string): Promise<void> {
+  // Brief pause for browser to start navigation after click
+  await page.waitForTimeout(150);
+
+  const urlAfter = page.url();
+  if (urlAfter !== urlBefore) {
+    // Navigation detected — wait for new page to load
+    logInfo(`[Executor] Navigation detected: "${stripQuery(urlBefore)}" → "${stripQuery(urlAfter)}" — waiting for load`);
+    await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+    return;
+  }
+
+  // URL didn't change yet — listen briefly for a late navigation (form submits)
+  try {
+    await page.waitForNavigation({ timeout: 300 });
+    logInfo(`[Executor] Late navigation detected — waiting for load`);
+    await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+  } catch {
+    // No navigation within 300ms — non-navigating click, proceed immediately
+  }
+}
+
 async function scrollAndHighlight(loc: Locator): Promise<void> {
   // Wait up to 8 s for conditional fields to appear after a trigger action.
   // For already-visible elements this resolves instantly.
@@ -372,8 +403,8 @@ export async function executePlannedActions(
 
   // Snapshot the page URL + title at the start of this step so we can detect
   // navigation away from the expected context during healing.
-  const stepStartUrl   = page.url();
-  const stepStartTitle = await page.title().catch(() => "");
+  let stepStartUrl   = page.url();
+  let stepStartTitle = await page.title().catch(() => "");
 
   for (let i = 0; i < resolved.length; i++) {
     // Early exits are checked once, outside the heal loop
@@ -408,6 +439,7 @@ export async function executePlannedActions(
 
       case "click": {
         if (!action.target) throw new Error("click missing target");
+        const urlBeforeClick = page.url();
 
         // When the LLM guesses "text:Log in" for a button, getByText matches
         // headings/labels before the actual button.  Refine to button-scoped
@@ -474,6 +506,14 @@ export async function executePlannedActions(
 
         // Stabilize own target before caching
         resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
+
+        // If the click triggered a page navigation (e.g. "Log in", "Next"),
+        // wait for the new page to fully load before proceeding.
+        await waitForNavigationIfNeeded(page, urlBeforeClick);
+        if (page.url() !== urlBeforeClick) {
+          stepStartUrl   = page.url();
+          stepStartTitle = await page.title().catch(() => "");
+        }
 
         // After clicking an accordion, tab, or dropdown, new elements appear.
         // Resolve + stabilize the NEXT action's target in the fresh context.
@@ -561,6 +601,7 @@ export async function executePlannedActions(
 
       case "press": {
         if (!action.target) throw new Error("press missing target");
+        const urlBeforePress = page.url();
         const loc = resolveLocator(page, action.target).first();
         await scrollAndHighlight(loc);
         await loc.press(action.value ?? "Enter");
@@ -568,6 +609,13 @@ export async function executePlannedActions(
 
         // Stabilize target while element is still reachable
         resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
+
+        // Press (e.g. Enter on a password field) can trigger form submission / navigation
+        await waitForNavigationIfNeeded(page, urlBeforePress);
+        if (page.url() !== urlBeforePress) {
+          stepStartUrl   = page.url();
+          stepStartTitle = await page.title().catch(() => "");
+        }
         break;
       }
 
