@@ -463,6 +463,75 @@ export async function executePlannedActions(
           }
         }
 
+        // When the LLM picks a text/button selector for a radio/checkbox instead of
+        // the actual input selector, find the real input by scanning label text.
+        // e.g. button:has-text("INDIVIDUAL (I)") → input[type="radio"][name="accountRelationships"][value="INDV"]
+        if (
+          (action.elementType === "radio" || action.elementType === "checkbox") &&
+          !clickTarget.startsWith("input[") && !clickTarget.startsWith("#")
+        ) {
+          // Extract the human-readable text from the selector
+          let labelText = clickTarget;
+          if (labelText.startsWith("text:")) {
+            labelText = labelText.replace(/^text:/, "").trim();
+          } else if (labelText.startsWith("label:")) {
+            labelText = labelText.replace(/^label:/, "").trim();
+          } else {
+            const hasTextMatch = labelText.match(/:has-text\("([^"]+)"\)/);
+            if (hasTextMatch) labelText = hasTextMatch[1];
+          }
+
+          const inputType = action.elementType; // "radio" or "checkbox"
+          const foundSelector = await page.evaluate(
+            ({ text, type }) => {
+              const inputs = Array.from(
+                document.querySelectorAll<HTMLInputElement>(`input[type="${type}"]`)
+              );
+              const normalise = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+              const target = normalise(text);
+
+              for (const input of inputs) {
+                // Check wrapping <label> text
+                const label = input.closest("label");
+                if (label && normalise(label.textContent ?? "").includes(target)) {
+                  return buildSelector(input);
+                }
+                // Check <label for="id"> text
+                if (input.id) {
+                  const forLabel = document.querySelector<HTMLLabelElement>(`label[for="${input.id}"]`);
+                  if (forLabel && normalise(forLabel.textContent ?? "").includes(target)) {
+                    return buildSelector(input);
+                  }
+                }
+                // Check sibling <span> text (e.g. <label><input><span>text</span></label>)
+                const sibling = input.nextElementSibling;
+                if (sibling && normalise(sibling.textContent ?? "").includes(target)) {
+                  return buildSelector(input);
+                }
+                // Check parent element text
+                const parent = input.parentElement;
+                if (parent && normalise(parent.textContent ?? "").includes(target)) {
+                  return buildSelector(input);
+                }
+              }
+              return null;
+
+              function buildSelector(el: HTMLInputElement): string {
+                if (el.name && el.value) return `input[type="${type}"][name="${el.name}"][value="${el.value}"]`;
+                if (el.id) return `#${el.id}`;
+                if (el.name) return `input[type="${type}"][name="${el.name}"]`;
+                return `input[type="${type}"]`;
+              }
+            },
+            { text: labelText, type: inputType }
+          ).catch(() => null);
+
+          if (foundSelector) {
+            logInfo(`[Executor] Refined ${inputType} target "${clickTarget}" → "${foundSelector}"`);
+            clickTarget = foundSelector;
+          }
+        }
+
         const loc = resolveLocator(page, clickTarget).first();
         await scrollAndHighlight(loc);
 
