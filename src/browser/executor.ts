@@ -23,6 +23,12 @@ import { detectHumanVerification } from "../detectors/detectHumanVerification.js
  * Silently ignores all errors so a scroll/highlight failure never blocks the
  * actual interaction that follows.
  */
+/** Strip query-string and hash from a URL for loose page-identity comparison. */
+function stripQuery(url: string): string {
+  try { const u = new URL(url); return u.origin + u.pathname; }
+  catch { return url; }
+}
+
 async function scrollAndHighlight(loc: Locator): Promise<void> {
   // Wait up to 8 s for conditional fields to appear after a trigger action.
   // For already-visible elements this resolves instantly.
@@ -364,6 +370,11 @@ export async function executePlannedActions(
   // Work on a shallow-copied array so we can update targets without mutating the original
   const resolved: PlannedAction[] = actions.map((a) => ({ ...a }));
 
+  // Snapshot the page URL + title at the start of this step so we can detect
+  // navigation away from the expected context during healing.
+  const stepStartUrl   = page.url();
+  const stepStartTitle = await page.title().catch(() => "");
+
   for (let i = 0; i < resolved.length; i++) {
     // Early exits are checked once, outside the heal loop
     if (resolved[i].notes) logInfo(`Planner notes: ${resolved[i].notes}`);
@@ -633,6 +644,26 @@ export async function executePlannedActions(
         let freshCtx;
         try { freshCtx = await extractPageContext(page); } catch { throw err; }
 
+        // ── Pre-heal: detect page navigation away from step context ───────────
+        // If the URL or title has changed significantly since this step started,
+        // the page is out of context — healing would target the wrong page.
+        const currentUrl   = page.url();
+        const currentTitle = await page.title().catch(() => "");
+        const urlChanged   = stripQuery(currentUrl) !== stripQuery(stepStartUrl);
+        const titleChanged = stepStartTitle && currentTitle &&
+                             currentTitle !== stepStartTitle &&
+                             !currentTitle.includes(stepStartTitle) &&
+                             !stepStartTitle.includes(currentTitle);
+
+        if (urlChanged || titleChanged) {
+          throw new Error(
+            `[Out of Context] Page changed during step execution — ` +
+            `expected "${stepStartTitle}" (${stripQuery(stepStartUrl)}) ` +
+            `but now on "${currentTitle}" (${stripQuery(currentUrl)}). ` +
+            `Stopping to avoid executing step on wrong page.`
+          );
+        }
+
         const healed = await healer.repairAction(
           resolved[i],
           errMsg,
@@ -644,6 +675,15 @@ export async function executePlannedActions(
         if (!healed) {
           logWarn("[ActionHealer] LLM could not produce a repair — re-throwing");
           throw err;
+        }
+
+        // ── Post-heal: healer says page doesn't match the step ────────────────
+        if (healed.action === "out_of_context") {
+          throw new Error(
+            `[Out of Context] Healer determined the current page does not match ` +
+            `the step context and cannot execute the action. ` +
+            `Reason: ${healed.explanation ?? "page context mismatch"}`
+          );
         }
 
         resolved[i] = healed;

@@ -52,7 +52,7 @@ export class ActionHealer {
       const repairedAction = JSON.parse(text) as PlannedAction;
 
       // Basic sanity check — must be a valid action type
-      const validActions = ["goto", "click", "fill", "selectOption", "press", "wait", "assert", "done"];
+      const validActions = ["goto", "click", "fill", "selectOption", "press", "wait", "assert", "done", "out_of_context"];
       if (!validActions.includes(repairedAction.action)) {
         logWarn(`[ActionHealer] LLM returned unknown action type: ${repairedAction.action}`);
         return null;
@@ -96,12 +96,25 @@ Elements:
 ${JSON.stringify(pageContext.elements, null, 2)}
 
 ## Your task
-Return a single corrected action JSON object that will achieve the same intent as the failed action.
+First, decide: does the current page match the context expected by the original step?
+
+RETURN { "action": "out_of_context", "explanation": "<reason>" } if ANY of these are true:
+- The page URL or title has changed and no longer matches the step's expected context
+- The key elements needed for this step (e.g. the form, dialog, or section) are no longer present
+- The page is showing a completely different view than what the step requires
+- You cannot find any element on the page that could reasonably fulfil the failed action's intent
+
+Otherwise, return a single corrected action JSON using elements that exist on the current page.
 Use only elements that exist in the current page context above.
 Prefer stable locators: [name=...], [aria-label=...], [placeholder=...], text:..., role:button|...
 Avoid locators with long numeric IDs (they are dynamically generated and will change).
 
-Return ONLY this JSON structure — no markdown fences, no extra text:
+Return ONLY one of these two JSON structures — no markdown fences, no extra text:
+
+Out of context:
+{ "action": "out_of_context", "explanation": "reason the page does not match the step" }
+
+Repaired action:
 {
   "action": "click | fill | selectOption | press | wait | assert | goto | done",
   "target": "locator string",
