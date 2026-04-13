@@ -628,6 +628,32 @@ export async function executePlannedActions(
           logWarn(`[Executor] Skipping assert — LLM generated no target (elementType: ${action.elementType ?? "unknown"}). Update the prompt or re-run to regenerate the plan.`);
           break;
         }
+
+        // Handle title: assertions — check page.title() instead of DOM locator.
+        // e.g. "title:Home Experience | Wealthscape"
+        if (action.target.startsWith("title:")) {
+          const expectedTitle = action.target.replace(/^title:/, "").trim();
+          await page.waitForFunction(
+            (expected) => document.title.includes(expected),
+            expectedTitle,
+            { timeout: 15000 }
+          );
+          logInfo(`[Executor] Assert passed — page title contains "${expectedTitle}"`);
+          break;
+        }
+
+        // Handle url: assertions — check page.url()
+        if (action.target.startsWith("url:")) {
+          const expectedUrl = action.target.replace(/^url:/, "").trim();
+          await page.waitForFunction(
+            (expected) => window.location.href.includes(expected),
+            expectedUrl,
+            { timeout: 15000 }
+          );
+          logInfo(`[Executor] Assert passed — page URL contains "${expectedUrl}"`);
+          break;
+        }
+
         const assertLoc = resolveLocator(page, action.target).first();
         await assertLoc.waitFor({ state: "visible", timeout: 8000 });
         await scrollAndHighlight(assertLoc);
