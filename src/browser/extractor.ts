@@ -102,7 +102,20 @@ export async function extractPageContext(page: Page): Promise<PageContext> {
       else if (aria)                   selector = `${tag}[aria-label="${aria}"]`;
       else if (placeholder)            selector = `${tag}[placeholder="${placeholder}"]`;
       else if (inputValue)             selector = `input[value="${inputValue}"]`;
-      else if (shortText)              selector = `text:${shortText}`;
+      else if (shortText) {
+        // For interactive tags (button, a, select, etc.), scope the text selector
+        // with the tag name so e.g. <button>Log in</button> becomes
+        // button:has-text("Log in") instead of text:Log in — which would also
+        // match a heading <h2>Log in</h2> that appears earlier in the DOM.
+        const INTERACTIVE_TEXT_TAGS = new Set(["button", "a", "select", "option", "summary"]);
+        if (INTERACTIVE_TEXT_TAGS.has(tag)) {
+          selector = `${tag}:has-text("${shortText}")`;
+        } else if (el.getAttribute("role") === "button" || el.getAttribute("role") === "link") {
+          selector = `[role="${el.getAttribute("role")}"]:has-text("${shortText}")`;
+        } else {
+          selector = `text:${shortText}`;
+        }
+      }
       else                             selector = tag;
 
       const style = window.getComputedStyle(el);
