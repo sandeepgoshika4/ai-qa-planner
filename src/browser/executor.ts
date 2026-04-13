@@ -478,6 +478,8 @@ export async function executePlannedActions(
 
         try {
           await loc.click({ timeout: 5000 });
+          // Small delay after click for Angular/React change detection to fire
+          await page.waitForTimeout(300);
         } catch (clickErr) {
           // Radio/checkbox inputs are often hidden behind a styled <label> or <span>.
           // Try clicking the associated label first, then fall back to force click.
