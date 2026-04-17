@@ -380,16 +380,72 @@ async function handleAutocomplete(page: Page, fillValue: string): Promise<string
 // ─── Blind action resolution ────────────────────────────────────────────────
 
 /**
+ * Split a string into lower-case word tokens, handling:
+ *   - camelCase  →  "incomeSource"    → ["income","source"]
+ *   - kebab/snake → "income-source"   → ["income","source"]
+ *   - natural    →  "Source of Income" → ["source","income"]  (stop words removed)
+ */
+function tokenize(str: string): string[] {
+  const STOP = new Set([
+    "of","the","a","an","is","in","for","and","or","to",
+    "by","at","on","with","from","into","as","its","be",
+  ]);
+  return str
+    .replace(/([a-z])([A-Z])/g, "$1 $2")   // camelCase split
+    .replace(/[^a-zA-Z0-9]+/g, " ")         // non-alphanumeric → space
+    .toLowerCase()
+    .split(" ")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0 && !STOP.has(t));
+}
+
+/**
+ * Return the fraction of tokens in `a` that also appear in `b`.
+ * Score is in [0, 1]; 1.0 means all tokens match.
+ */
+function scoreMatch(a: string[], b: string[]): number {
+  if (a.length === 0 || b.length === 0) return 0;
+  const setB = new Set(b);
+  const common = a.filter((t) => setB.has(t)).length;
+  return common / Math.max(a.length, b.length);
+}
+
+/**
+ * Find the PageElement whose attributes best match the human-readable
+ * `fieldName` (e.g. "Source of Income" → matches idAttr "incomeSource").
+ *
+ * Scores all candidates against every attribute using token overlap and
+ * returns the best match if its score is ≥ THRESHOLD (0.5 by default).
+ */
+function findBestMatch(fieldName: string, candidates: PageElement[]): PageElement | null {
+  const THRESHOLD = 0.5;
+  const fieldTokens = tokenize(fieldName);
+  if (fieldTokens.length === 0) return null;
+
+  let best: PageElement | null = null;
+  let bestScore = 0;
+
+  for (const e of candidates) {
+    const top = Math.max(
+      scoreMatch(fieldTokens, tokenize(e.name ?? "")),
+      scoreMatch(fieldTokens, tokenize(e.ariaLabel ?? "")),
+      scoreMatch(fieldTokens, tokenize(e.placeholder ?? "")),
+      scoreMatch(fieldTokens, tokenize(e.text ?? "")),
+      scoreMatch(fieldTokens, tokenize(e.idAttr ?? "")),
+    );
+    if (top > bestScore) {
+      bestScore = top;
+      best = e;
+    }
+  }
+
+  return bestScore >= THRESHOLD ? best : null;
+}
+
+/**
  * Resolve a blind action's target (a human-readable field name like
  * "Source of Income") into a real CSS selector by re-extracting the live DOM
- * and matching against element attributes.
- *
- * Matching priority:
- *   1. name attribute    (exact or partial, case-insensitive)
- *   2. aria-label        (exact or partial, case-insensitive)
- *   3. placeholder       (exact or partial, case-insensitive)
- *   4. associated <label> text (via DOM scan)
- *   5. element text / id
+ * and matching against element attributes using token-based scoring.
  *
  * Returns the matching element's selector, or null if no match found.
  */
@@ -402,8 +458,7 @@ async function resolveBlindTarget(
   // and the conditional field should be in the DOM.
   const freshCtx = await extractPageContext(page);
   const elements = freshCtx.elements;
-  const lower = fieldName.toLowerCase().trim();
-  if (!lower) return null;
+  if (!fieldName.trim()) return null;
 
   // ── Filter candidates by elementType ─────────────────────────────────────
   let candidates = elements.filter((e) => e.visible && e.enabled !== false);
@@ -424,20 +479,20 @@ async function resolveBlindTarget(
     );
   }
 
-  // ── Attribute matching: name, aria-label, placeholder, text ──────────────
-  const match = candidates.find(
-    (e) =>
-      (e.name ?? "").toLowerCase().includes(lower) ||
-      lower.includes((e.name ?? "").toLowerCase()) ||
-      (e.ariaLabel ?? "").toLowerCase().includes(lower) ||
-      lower.includes((e.ariaLabel ?? "").toLowerCase()) ||
-      (e.placeholder ?? "").toLowerCase().includes(lower) ||
-      lower.includes((e.placeholder ?? "").toLowerCase()) ||
-      (e.text ?? "").toLowerCase().includes(lower) ||
-      (e.idAttr ?? "").toLowerCase().includes(lower.replace(/\s+/g, ""))
-  );
+  // ── Token-based best-match across all element attributes ─────────────────
+  const match = findBestMatch(fieldName, candidates);
 
-  if (match) return match.selector;
+  if (match) {
+    const score = Math.max(
+      scoreMatch(tokenize(fieldName), tokenize(match.name ?? "")),
+      scoreMatch(tokenize(fieldName), tokenize(match.ariaLabel ?? "")),
+      scoreMatch(tokenize(fieldName), tokenize(match.placeholder ?? "")),
+      scoreMatch(tokenize(fieldName), tokenize(match.text ?? "")),
+      scoreMatch(tokenize(fieldName), tokenize(match.idAttr ?? "")),
+    );
+    logInfo(`[Executor] Blind token-match: "${fieldName}" → "${match.selector}" (score ${(score * 100).toFixed(0)}%)`);
+    return match.selector;
+  }
 
   // ── DOM label scan: find <label> whose text matches, then get its input ──
   const labelSelector = await page.evaluate(
