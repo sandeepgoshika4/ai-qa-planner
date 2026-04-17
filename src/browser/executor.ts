@@ -581,10 +581,14 @@ export async function executePlannedActions(
   // Work on a shallow-copied array so we can update targets without mutating the original
   const resolved: PlannedAction[] = actions.map((a) => ({ ...a }));
 
+  // `activePage` tracks the currently active page — starts as the original page
+  // but switches to a new window/tab if a click opens one.
+  let activePage = page;
+
   // Snapshot the page URL + title at the start of this step so we can detect
   // navigation away from the expected context during healing.
-  let stepStartUrl   = page.url();
-  let stepStartTitle = await page.title().catch(() => "");
+  let stepStartUrl   = activePage.url();
+  let stepStartTitle = await activePage.title().catch(() => "");
 
   for (let i = 0; i < resolved.length; i++) {
     // Early exits are checked once, outside the heal loop
@@ -613,7 +617,7 @@ export async function executePlannedActions(
 
         // Step 1: Try to find the element by token-based name/label/aria matching.
         // Pass undefined for elementType so all visible elements are searched.
-        const foundSelector = await resolveBlindTarget(page, blindTarget, resolved[i].elementType);
+        const foundSelector = await resolveBlindTarget(activePage, blindTarget, resolved[i].elementType);
 
         if (foundSelector) {
           logInfo(`[Executor] Blind resolved: "${blindTarget}" → "${foundSelector}"`);
@@ -622,7 +626,7 @@ export async function executePlannedActions(
           // Step 2: Fall back to ActionHealer with fresh page context
           logInfo(`[Executor] Blind target "${blindTarget}" not found by name — calling ActionHealer...`);
           try {
-            const freshCtx = await extractPageContext(page);
+            const freshCtx = await extractPageContext(activePage);
             const healed = await healer.repairAction(
               resolved[i],
               `Blind action — field "${blindTarget}" was not in page context at plan time. Resolve the correct selector from the current live page.`,
@@ -664,14 +668,14 @@ export async function executePlannedActions(
       case "goto": {
         const url = action.valueKey ? dataSet[action.valueKey] : action.value;
         if (!url) throw new Error("Missing URL");
-        await page.goto(url, { waitUntil: "networkidle" });
-        await ensureNoHumanVerification(page);
+        await activePage.goto(url, { waitUntil: "networkidle" });
+        await ensureNoHumanVerification(activePage);
         break;
       }
 
       case "click": {
         if (!action.target) throw new Error("click missing target");
-        const urlBeforeClick = page.url();
+        const urlBeforeClick = activePage.url();
 
         // When the LLM guesses "text:Log in" for a button, getByText matches
         // headings/labels before the actual button.  Refine to button-scoped
@@ -686,7 +690,7 @@ export async function executePlannedActions(
             `[role="button"]:has-text("${btnText}")`,
           ];
           for (const c of candidates) {
-            const count = await page.locator(c).count().catch(() => 0);
+            const count = await activePage.locator(c).count().catch(() => 0);
             if (count > 0) {
               logInfo(`[Executor] Refined button target "${action.target}" → "${c}"`);
               clickTarget = c;
@@ -714,7 +718,7 @@ export async function executePlannedActions(
           }
 
           const inputType = action.elementType; // "radio" or "checkbox"
-          const foundSelector = await page.evaluate(
+          const foundSelector = await activePage.evaluate(
             ({ text, type }) => {
               const inputs = Array.from(
                 document.querySelectorAll<HTMLInputElement>(`input[type="${type}"]`)
@@ -764,7 +768,10 @@ export async function executePlannedActions(
           }
         }
 
-        const loc = resolveLocator(page, clickTarget).first();
+        // Snapshot pages before click to detect any new window/tab that opens
+        const pagesBefore = activePage.context().pages().slice();
+
+        const loc = resolveLocator(activePage, clickTarget).first();
         await scrollAndHighlight(loc);
 
         // For radio/checkbox: if already in the desired state, skip the click entirely.
@@ -772,7 +779,7 @@ export async function executePlannedActions(
           const alreadyChecked = await loc.evaluate((el) => (el as HTMLInputElement).checked).catch(() => false);
           if (alreadyChecked) {
             logInfo(`[Executor] Skipping click — ${action.elementType} is already checked: ${action.target}`);
-            resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
+            resolved[i] = { ...resolved[i], target: await toStableSelector(activePage, action.target) };
             break;
           }
         }
@@ -780,7 +787,7 @@ export async function executePlannedActions(
         try {
           await loc.click({ timeout: 5000 });
           // Small delay after click for Angular/React change detection to fire
-          await page.waitForTimeout(3000);
+          await activePage.waitForTimeout(300);
         } catch (clickErr) {
           // Radio/checkbox inputs are often hidden behind a styled <label> or <span>.
           // Try clicking the associated label first, then fall back to force click.
@@ -805,17 +812,34 @@ export async function executePlannedActions(
           }
         }
 
-        await ensureNoHumanVerification(page);
+        await ensureNoHumanVerification(activePage);
+
+        // ── New window / tab detection ──────────────────────────────────────────
+        // If the click opened a new browser window (target="_blank", window.open),
+        // switch activePage to it and continue execution there.
+        const pagesAfter = activePage.context().pages();
+        const newTab = pagesAfter.find((p) => !pagesBefore.includes(p) && !p.isClosed());
+        if (newTab) {
+          logInfo(`[Executor] New window/tab detected — waiting for load...`);
+          await newTab.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+          await newTab.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+          activePage = newTab;
+          stepStartUrl   = activePage.url();
+          stepStartTitle = await activePage.title().catch(() => "");
+          logInfo(`[Executor] Switched to new window: "${stepStartTitle}" (${stepStartUrl})`);
+          resolved[i] = { ...resolved[i], target: action.target }; // keep original target
+          break;
+        }
 
         // Stabilize own target before caching
-        resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
+        resolved[i] = { ...resolved[i], target: await toStableSelector(activePage, action.target) };
 
         // If the click triggered a page navigation (e.g. "Log in", "Next"),
         // wait for the new page to fully load before proceeding.
-        await waitForNavigationIfNeeded(page, urlBeforeClick);
-        if (page.url() !== urlBeforeClick) {
-          stepStartUrl   = page.url();
-          stepStartTitle = await page.title().catch(() => "");
+        await waitForNavigationIfNeeded(activePage, urlBeforeClick);
+        if (activePage.url() !== urlBeforeClick) {
+          stepStartUrl   = activePage.url();
+          stepStartTitle = await activePage.title().catch(() => "");
         }
 
         // After clicking an accordion, tab, or dropdown, new elements appear.
@@ -829,10 +853,10 @@ export async function executePlannedActions(
         if (triggersReveal && i + 1 < resolved.length) {
           const next = resolved[i + 1];
           if (next.target) {
-            const elements = await settleAndExtract(page);
+            const elements = await settleAndExtract(activePage);
             const found = findInElements(elements, next.target, next.elementType);
             if (found) {
-              const stableFound = await toStableSelector(page, found);
+              const stableFound = await toStableSelector(activePage, found);
               logInfo(`[Executor] Resolved dynamic target "${next.target}" → "${stableFound}"`);
               resolved[i + 1] = { ...next, target: stableFound };
             } else {
@@ -848,10 +872,10 @@ export async function executePlannedActions(
         const value = action.valueKey ? dataSet[action.valueKey] : action.value;
         if (value == null) throw new Error("selectOption missing value");
 
-        await robustSelectOption(page, action.target, value);
+        await robustSelectOption(activePage, action.target, value);
 
-        resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
-        await ensureNoHumanVerification(page);
+        resolved[i] = { ...resolved[i], target: await toStableSelector(activePage, action.target) };
+        await ensureNoHumanVerification(activePage);
         break;
       }
 
@@ -859,15 +883,15 @@ export async function executePlannedActions(
         if (!action.target) throw new Error("fill missing target");
         const value = action.valueKey ? dataSet[action.valueKey] : action.value;
         if (value == null) throw new Error("fill missing value");
-        const loc = resolveLocator(page, action.target).first();
+        const loc = resolveLocator(activePage, action.target).first();
 
         // If the target is a <select> element (or marked as select), fill() won't work.
         const tagName = await loc.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
         if (tagName === "select" || action.elementType === "select") {
           logInfo(`[Executor] Target is a <select> — switching fill → selectOption for "${action.target}"`);
-          await robustSelectOption(page, action.target, value);
-          resolved[i] = { ...resolved[i], action: "selectOption", target: await toStableSelector(page, action.target) };
-          await ensureNoHumanVerification(page);
+          await robustSelectOption(activePage, action.target, value);
+          resolved[i] = { ...resolved[i], action: "selectOption", target: await toStableSelector(activePage, action.target) };
+          await ensureNoHumanVerification(activePage);
           break;
         }
 
@@ -876,14 +900,14 @@ export async function executePlannedActions(
 
         // Stabilize the target AFTER filling (element still in DOM) so the
         // cached selector survives the next page load even if the id is random.
-        resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
-        await ensureNoHumanVerification(page);
+        resolved[i] = { ...resolved[i], target: await toStableSelector(activePage, action.target) };
+        await ensureNoHumanVerification(activePage);
 
         // For autocomplete inputs: wait for suggestions, click the matching one,
         // and update the following click action's target with the actual suggestion selector.
         if (action.elementType === "input-autocomplete") {
-          await page.waitForTimeout(3000);
-          const suggestionSelector = await handleAutocomplete(page, value);
+          await activePage.waitForTimeout(500);
+          const suggestionSelector = await handleAutocomplete(activePage, value);
           if (suggestionSelector) {
             // Skip the next click/press that confirms the autocomplete selection.
             // The LLM sometimes inserts a "wait" action between the fill and the
@@ -925,26 +949,26 @@ export async function executePlannedActions(
 
       case "press": {
         if (!action.target) throw new Error("press missing target");
-        const urlBeforePress = page.url();
-        const loc = resolveLocator(page, action.target).first();
+        const urlBeforePress = activePage.url();
+        const loc = resolveLocator(activePage, action.target).first();
         await scrollAndHighlight(loc);
         await loc.press(action.value ?? "Enter");
-        await ensureNoHumanVerification(page);
+        await ensureNoHumanVerification(activePage);
 
         // Stabilize target while element is still reachable
-        resolved[i] = { ...resolved[i], target: await toStableSelector(page, action.target) };
+        resolved[i] = { ...resolved[i], target: await toStableSelector(activePage, action.target) };
 
         // Press (e.g. Enter on a password field) can trigger form submission / navigation
-        await waitForNavigationIfNeeded(page, urlBeforePress);
-        if (page.url() !== urlBeforePress) {
-          stepStartUrl   = page.url();
-          stepStartTitle = await page.title().catch(() => "");
+        await waitForNavigationIfNeeded(activePage, urlBeforePress);
+        if (activePage.url() !== urlBeforePress) {
+          stepStartUrl   = activePage.url();
+          stepStartTitle = await activePage.title().catch(() => "");
         }
         break;
       }
 
       case "wait":
-        await page.waitForTimeout(Number(action.value ?? env.stepDelayMs));
+        await activePage.waitForTimeout(Number(action.value ?? env.stepDelayMs));
         break;
 
       case "assert": {
@@ -957,7 +981,7 @@ export async function executePlannedActions(
         // e.g. "title:Home Experience | Wealthscape"
         if (action.target.startsWith("title:")) {
           const expectedTitle = action.target.replace(/^title:/, "").trim();
-          await page.waitForFunction(
+          await activePage.waitForFunction(
             (expected) => document.title.includes(expected),
             expectedTitle,
             { timeout: 15000 }
@@ -969,7 +993,7 @@ export async function executePlannedActions(
         // Handle url: assertions — check page.url()
         if (action.target.startsWith("url:")) {
           const expectedUrl = action.target.replace(/^url:/, "").trim();
-          await page.waitForFunction(
+          await activePage.waitForFunction(
             (expected) => window.location.href.includes(expected),
             expectedUrl,
             { timeout: 15000 }
@@ -978,10 +1002,10 @@ export async function executePlannedActions(
           break;
         }
 
-        const assertLoc = resolveLocator(page, action.target).first();
+        const assertLoc = resolveLocator(activePage, action.target).first();
         await assertLoc.waitFor({ state: "visible", timeout: 8000 });
         await scrollAndHighlight(assertLoc);
-        await ensureNoHumanVerification(page);
+        await ensureNoHumanVerification(activePage);
         break;
       }
 
@@ -1000,7 +1024,7 @@ export async function executePlannedActions(
         // repaired by replanning — fail immediately without healing.
         const errMsg = (err as Error).message;
         let pageTitle: string | undefined;
-        try { pageTitle = await page.title(); } catch { /* ignore */ }
+        try { pageTitle = await activePage.title(); } catch { /* ignore */ }
 
         const label = `${action.action}${action.target ? ` -> ${action.target}` : ""}`;
 
@@ -1014,7 +1038,7 @@ export async function executePlannedActions(
         // Check the live DOM for visible system-error / API-failure banners.
         // Angular SPAs render these as components — the page title stays the same
         // even when a "System Error" message is displayed on screen.
-        const domError = await detectPageError(page);
+        const domError = await detectPageError(activePage);
         if (domError) {
           throw new FatalExecutionError(
             `[Fatal] System error detected on page while executing "${label}": ${domError}`,
@@ -1036,13 +1060,13 @@ export async function executePlannedActions(
         // ── Final heal attempt: try visual locator first ───────────────────────
         if (healAttempt === env.healMaxAttempts && env.visualLocatorEnabled) {
           logInfo(`[VisualLocator] Final heal attempt — trying screenshot-based element location`);
-          const visual = await visualLocator.locate(page, resolved[i], stepDescription);
+          const visual = await visualLocator.locate(activePage, resolved[i], stepDescription);
 
           if (visual?.type === "coordinates") {
             // Click directly at the pixel coordinates identified in the screenshot
             logInfo(`[VisualLocator] Clicking at (${visual.x}, ${visual.y}): ${visual.explanation}`);
-            await page.mouse.click(visual.x, visual.y);
-            await ensureNoHumanVerification(page);
+            await activePage.mouse.click(visual.x, visual.y);
+            await ensureNoHumanVerification(activePage);
             resolved[i] = {
               ...resolved[i],
               notes: `${resolved[i].notes ?? ""} [visual locator: clicked at (${visual.x}, ${visual.y})]`.trim()
@@ -1063,13 +1087,13 @@ export async function executePlannedActions(
         // ── Text-based healer ─────────────────────────────────────────────────
         // Capture live page state for the healer
         let freshCtx;
-        try { freshCtx = await extractPageContext(page); } catch { throw err; }
+        try { freshCtx = await extractPageContext(activePage); } catch { throw err; }
 
         // ── Pre-heal: detect page navigation away from step context ───────────
         // If the URL or title has changed significantly since this step started,
         // the page is out of context — healing would target the wrong page.
-        const currentUrl   = page.url();
-        const currentTitle = await page.title().catch(() => "");
+        const currentUrl   = activePage.url();
+        const currentTitle = await activePage.title().catch(() => "");
         const urlChanged   = stripQuery(currentUrl) !== stripQuery(stepStartUrl);
         const titleChanged = stepStartTitle && currentTitle &&
                              currentTitle !== stepStartTitle &&
@@ -1119,7 +1143,7 @@ export async function executePlannedActions(
       i++;
     }
 
-    await page.waitForTimeout(env.stepDelayMs);
+    await activePage.waitForTimeout(env.stepDelayMs);
   }
 
   return resolved;
