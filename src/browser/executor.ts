@@ -768,7 +768,7 @@ export async function executePlannedActions(
         try {
           await loc.click({ timeout: 5000 });
           // Small delay after click for Angular/React change detection to fire
-          await page.waitForTimeout(300);
+          await page.waitForTimeout(3000);
         } catch (clickErr) {
           // Radio/checkbox inputs are often hidden behind a styled <label> or <span>.
           // Try clicking the associated label first, then fall back to force click.
@@ -870,6 +870,7 @@ export async function executePlannedActions(
         // For autocomplete inputs: wait for suggestions, click the matching one,
         // and update the following click action's target with the actual suggestion selector.
         if (action.elementType === "input-autocomplete") {
+          await page.waitForTimeout(3000);
           const suggestionSelector = await handleAutocomplete(page, value);
           if (suggestionSelector) {
             // Skip the next click/press that confirms the autocomplete selection.
