@@ -75,6 +75,7 @@ export interface PlannerContext {
     interactiveSent: number;
     contextSent: number;
     conditionalSent: number;
+    displaySent: number;
     totalSent: number;
   };
 }
@@ -84,6 +85,7 @@ export interface PlannerContext {
 const MAX_INTERACTIVE_ELEMENTS  = env.maxPlannerElements;   // default 60
 const MAX_CONTEXT_ELEMENTS      = 20;                        // headings, labels, alerts
 const MAX_CONDITIONAL_ELEMENTS  = 20;                        // hidden fields that appear on change
+const MAX_DISPLAY_ELEMENTS      = 20;                        // read-only data values (td, dd, etc.)
 const MAX_TEXT_LENGTH           = 80;                        // chars before truncation
 
 // ─── Tier 1: Interactive ──────────────────────────────────────────────────────
@@ -188,6 +190,30 @@ function isConditional(el: PageElement): boolean {
   return true;
 }
 
+// ─── Tier 4: Display values (read-only data on screen) ───────────────────────
+
+/**
+ * Visible short-text cells that carry read-only DATA VALUES the LLM needs to
+ * see for verification steps — e.g. an email address in a <td>, a status like
+ * "Text Message" in a <dd>, a signer name in a <dt>.
+ *
+ * These are NOT interactive (no input/button) and NOT headings/labels (tier 2),
+ * but they ARE the concrete values a "Verify the page shows …" step references.
+ * Without them, the LLM can't write correct `text:` assert targets.
+ *
+ * Included tags: td, th, dd, dt (structured data containers)
+ * Excluded if: invisible, blank, > MAX_TEXT_LENGTH chars, or already seen
+ */
+const DISPLAY_TAGS = new Set(["td", "th", "dd", "dt"]);
+
+function isDisplayValue(el: PageElement): boolean {
+  if (!el.visible) return false;
+  const text = el.text?.trim();
+  if (!text) return false;
+  if (text.length > MAX_TEXT_LENGTH) return false;
+  return DISPLAY_TAGS.has(el.tag);
+}
+
 // ─── Field shaping ────────────────────────────────────────────────────────────
 
 function toPlannedElement(el: PageElement, kind: "interactive" | "context", hidden = false): PlannerElement {
@@ -267,8 +293,21 @@ export function filterPageContext(
     .slice(0, MAX_CONDITIONAL_ELEMENTS)
     .map((el) => toPlannedElement(el, "interactive", /* hidden */ true));
 
-  // ── Combine: interactive → context → conditional ─────────────────────────────
-  const elements = [...interactive, ...contextual, ...conditional];
+  // ── Tier 4: Display values (td, th, dd, dt — read-only data cells) ──────────
+  // Gives the LLM concrete values shown on verification/summary pages so it can
+  // write accurate `text:` assert targets without needing to see every <span>.
+  const display = ctx.elements
+    .filter(isDisplayValue)
+    .filter((el) => {
+      if (seenSelectors.has(el.selector)) return false;
+      seenSelectors.add(el.selector);
+      return true;
+    })
+    .slice(0, MAX_DISPLAY_ELEMENTS)
+    .map((el) => toPlannedElement(el, "context"));
+
+  // ── Combine: interactive → context → conditional → display ───────────────────
+  const elements = [...interactive, ...contextual, ...conditional, ...display];
 
   return {
     url: ctx.url,
@@ -279,6 +318,7 @@ export function filterPageContext(
       interactiveSent:  interactive.length,
       contextSent:      contextual.length,
       conditionalSent:  conditional.length,
+      displaySent:      display.length,
       totalSent:        elements.length
     }
   };

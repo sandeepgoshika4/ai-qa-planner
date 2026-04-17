@@ -599,37 +599,49 @@ export async function executePlannedActions(
     // (conditional/dynamic field), resolve it now against the live DOM.
     if (resolved[i].blind && resolved[i].target) {
       const blindTarget = resolved[i].target!;
-      logInfo(`[Executor] Blind action: "${resolved[i].action} → ${blindTarget}" [${resolved[i].elementType ?? "?"}] — resolving against live DOM...`);
+      const isAssert = resolved[i].action === "assert";
 
-      // Step 1: Try to find the element by name/label/aria matching
-      const foundSelector = await resolveBlindTarget(page, blindTarget, resolved[i].elementType);
-
-      if (foundSelector) {
-        logInfo(`[Executor] Blind resolved: "${blindTarget}" → "${foundSelector}"`);
-        resolved[i] = { ...resolved[i], target: foundSelector, blind: false };
+      // For assert: the LLM should have used "text:<value>" but set blind instead.
+      // Rewrite to text: prefix so the executor checks page visibility directly —
+      // no element matching needed, no ActionHealer call.
+      if (isAssert) {
+        const textTarget = blindTarget.startsWith("text:") ? blindTarget : `text:${blindTarget}`;
+        logInfo(`[Executor] Blind assert rewritten: "${blindTarget}" → "${textTarget}"`);
+        resolved[i] = { ...resolved[i], target: textTarget, elementType: "label", blind: false };
       } else {
-        // Step 2: Fall back to ActionHealer with fresh page context
-        logInfo(`[Executor] Blind target "${blindTarget}" not found by name — calling ActionHealer...`);
-        try {
-          const freshCtx = await extractPageContext(page);
-          const healed = await healer.repairAction(
-            resolved[i],
-            `Blind action — field "${blindTarget}" was not in page context at plan time. Resolve the correct selector from the current live page.`,
-            freshCtx,
-            stepDescription,
-            resolved.slice(0, i)
-          );
+        logInfo(`[Executor] Blind action: "${resolved[i].action} → ${blindTarget}" [${resolved[i].elementType ?? "?"}] — resolving against live DOM...`);
 
-          if (healed && healed.action !== "out_of_context" && healed.target) {
-            logInfo(`[Executor] Blind healed: "${blindTarget}" → "${healed.target}" [${healed.elementType ?? "?"}]`);
-            resolved[i] = { ...healed, blind: false };
-          } else {
-            logWarn(`[Executor] ActionHealer could not resolve blind target "${blindTarget}" — attempting with original`);
+        // Step 1: Try to find the element by token-based name/label/aria matching.
+        // Pass undefined for elementType so all visible elements are searched.
+        const foundSelector = await resolveBlindTarget(page, blindTarget, resolved[i].elementType);
+
+        if (foundSelector) {
+          logInfo(`[Executor] Blind resolved: "${blindTarget}" → "${foundSelector}"`);
+          resolved[i] = { ...resolved[i], target: foundSelector, blind: false };
+        } else {
+          // Step 2: Fall back to ActionHealer with fresh page context
+          logInfo(`[Executor] Blind target "${blindTarget}" not found by name — calling ActionHealer...`);
+          try {
+            const freshCtx = await extractPageContext(page);
+            const healed = await healer.repairAction(
+              resolved[i],
+              `Blind action — field "${blindTarget}" was not in page context at plan time. Resolve the correct selector from the current live page.`,
+              freshCtx,
+              stepDescription,
+              resolved.slice(0, i)
+            );
+
+            if (healed && healed.action !== "out_of_context" && healed.target) {
+              logInfo(`[Executor] Blind healed: "${blindTarget}" → "${healed.target}" [${healed.elementType ?? "?"}]`);
+              resolved[i] = { ...healed, blind: false };
+            } else {
+              logWarn(`[Executor] ActionHealer could not resolve blind target "${blindTarget}" — attempting with original`);
+              resolved[i] = { ...resolved[i], blind: false };
+            }
+          } catch (healErr) {
+            logWarn(`[Executor] Blind heal failed: ${(healErr as Error).message} — attempting with original target`);
             resolved[i] = { ...resolved[i], blind: false };
           }
-        } catch (healErr) {
-          logWarn(`[Executor] Blind heal failed: ${(healErr as Error).message} — attempting with original target`);
-          resolved[i] = { ...resolved[i], blind: false };
         }
       }
     }

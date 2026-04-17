@@ -65,6 +65,19 @@ Rules:
   unsupported-browser, access denied, captcha, or interstitial message,
   DO NOT continue normal automation. Return stopExecution: true with a note.
 - assert actions MUST always have a target — never emit an assert without one. If you cannot identify a specific element to assert, omit the assert entirely.
+- HOW TO WRITE ASSERT TARGETS:
+    • For verifying DISPLAYED TEXT VALUES (e.g. a read-only email address, a status like "Text Message",
+      a name, a dollar amount shown on screen) — use the "text:" prefix:
+        { "action": "assert", "target": "text:Text Message", "elementType": "label" }
+        { "action": "assert", "target": "text:SANDEEP.GOSHIKA@FMR.COM", "elementType": "label" }
+      This checks that the text is visible anywhere on the page — no specific element needed.
+    • For verifying a PAGE HEADING or TITLE visible on screen — use "text:" or a heading selector:
+        { "action": "assert", "target": "text:Review", "elementType": "label" }
+    • For verifying an INPUT has a value — use the input's selector with currentValue in mind.
+    • NEVER set "blind": true on an assert action. If the value to verify is not in the page context,
+      use "text:<exact visible text>" as the target — the executor will check page visibility directly.
+    • NEVER use elementType "input-text" for an assert unless you are asserting on a form input field.
+      Use elementType "label" for any read-only displayed text.
 - HOW TO END A STEP — always finish your plan with these two actions in order:
     1. assert  → verify the expected result is visible on the page.
                Use a specific element from the page context that confirms the step succeeded
@@ -91,7 +104,8 @@ Rules:
   Still plan the action and set "blind": true. Use the field label/name from the step text as
   the target (e.g. "Source of Income", "Spouse Name"). The executor will re-extract the page
   after earlier actions have executed and resolve the correct selector at runtime.
-  This applies to ALL action types: fill, click, selectOption, press.
+  This applies to fill, click, selectOption, press ONLY — NEVER use blind: true on assert.
+  For assert, always use "text:<visible value>" instead.
   Examples of blind actions:
     { "action": "fill", "target": "Source of Income", "value": "Pension", "elementType": "input-text", "blind": true }
     { "action": "click", "target": "Spouse Info", "elementType": "checkbox", "blind": true }
@@ -110,7 +124,7 @@ ${stepText}
 Expected result (use this to write the assert action — find a visible element that confirms this outcome):
 ${expectedResult ?? "Not specified"}
 
-Current page context (${pageContext._stats.interactiveSent} interactive + ${pageContext._stats.contextSent} context elements; ${pageContext._stats.totalExtracted} total on page):
+Current page context (${pageContext._stats.interactiveSent} interactive + ${pageContext._stats.contextSent} context + ${pageContext._stats.displaySent} display values; ${pageContext._stats.totalExtracted} total on page):
 URL: ${pageContext.url}
 Title: ${pageContext.title}
 Elements:
