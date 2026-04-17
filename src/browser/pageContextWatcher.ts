@@ -11,6 +11,69 @@ import { env } from "../config/env.js";
 
 const log = (msg: string): void => { if (env.watcherLogging) logInfo(msg); };
 
+// ─── Full-page screenshot helper ──────────────────────────────────────────────
+
+/**
+ * Take a screenshot that captures the FULL content of every scrollable
+ * fragment on the page — not just what fits in the visible viewport.
+ *
+ * Playwright's built-in `fullPage: true` only scrolls `window`, so any inner
+ * scroll containers (panels, modals, fixed-height divs) are clipped at their
+ * rendered height. This helper temporarily expands those containers before
+ * capturing, then restores the original styles.
+ *
+ * Strategy:
+ *   1. Find all elements whose scrollHeight exceeds their clientHeight and
+ *      whose computed overflow-y is "scroll" or "auto".
+ *   2. Save inline overflow/height/maxHeight on a data attribute.
+ *   3. Set overflow: visible, height: scrollHeight, maxHeight: none.
+ *   4. Take the fullPage screenshot (the expanded document height is now taller).
+ *   5. Restore original inline styles from the saved data attribute.
+ */
+async function takeFullPageScreenshot(page: Page, filePath: string): Promise<void> {
+  // Step 1 & 2 & 3 — expand all scroll containers, save originals
+  await page.evaluate(() => {
+    const els = Array.from(document.querySelectorAll<HTMLElement>("*")).filter((el) => {
+      if (el.scrollHeight <= el.clientHeight + 2) return false;
+      const s = window.getComputedStyle(el);
+      return s.overflowY === "scroll" || s.overflowY === "auto" ||
+             s.overflowX === "scroll" || s.overflowX === "auto";
+    });
+    for (const el of els) {
+      // Persist original inline styles so we can restore them exactly
+      el.dataset["screenshotSavedOy"]  = el.style.overflowY;
+      el.dataset["screenshotSavedOx"]  = el.style.overflowX;
+      el.dataset["screenshotSavedH"]   = el.style.height;
+      el.dataset["screenshotSavedMh"]  = el.style.maxHeight;
+      // Expand to full scroll height
+      el.style.overflowY  = "visible";
+      el.style.overflowX  = "visible";
+      el.style.height     = `${el.scrollHeight}px`;
+      el.style.maxHeight  = "none";
+    }
+  }).catch(() => {});
+
+  // Step 4 — capture with expanded layout
+  try {
+    await page.screenshot({ path: filePath, fullPage: true });
+  } finally {
+    // Step 5 — always restore, even if screenshot threw
+    await page.evaluate(() => {
+      const els = document.querySelectorAll<HTMLElement>("[data-screenshot-saved-oy],[data-screenshot-saved-h]");
+      for (const el of els) {
+        el.style.overflowY  = el.dataset["screenshotSavedOy"]  ?? "";
+        el.style.overflowX  = el.dataset["screenshotSavedOx"]  ?? "";
+        el.style.height     = el.dataset["screenshotSavedH"]   ?? "";
+        el.style.maxHeight  = el.dataset["screenshotSavedMh"]  ?? "";
+        delete el.dataset["screenshotSavedOy"];
+        delete el.dataset["screenshotSavedOx"];
+        delete el.dataset["screenshotSavedH"];
+        delete el.dataset["screenshotSavedMh"];
+      }
+    }).catch(() => {});
+  }
+}
+
 // ─── Public types ──────────────────────────────────────────────────────────────
 
 /**
@@ -37,7 +100,7 @@ export interface PageContextChange {
   /** ISO-8601 timestamp of when the settled snapshot was taken. */
   at: string;
   /** Artifact files saved for this change. */
-  artifacts: { screenshotPath: string; contextPath: string; domPath: string };
+  artifacts: { contextPath: string; domPath: string };
 }
 
 /** Callback invoked once per step after the page has settled. */
@@ -145,7 +208,7 @@ export class PageContextWatcher {
 
     writeJson(contextPath, context);
     await fs.writeFile(domPath, context.dom, "utf-8");
-    await this.page.screenshot({ path: screenshotPath, fullPage: true });
+    await takeFullPageScreenshot(this.page, screenshotPath);
 
     this.lastContext = context;
 
@@ -295,12 +358,10 @@ export class PageContextWatcher {
     const base = path.join(this.artifactDir, `step-${index + 1}-settled`);
     const contextPath = `${base}.json`;
     const domPath = `${base}.html`;
-    const screenshotPath = `${base}.png`;
 
     try {
       writeJson(contextPath, finalContext);
       await fs.writeFile(domPath, finalContext.dom, "utf-8");
-      await this.page.screenshot({ path: screenshotPath, fullPage: true });
     } catch {
       // Artifact save failure must never interrupt execution.
     }
@@ -346,8 +407,6 @@ export class PageContextWatcher {
       }
     }
 
-    log(`[PageContextWatcher]   Artifact: ${path.basename(screenshotPath)}`);
-
     // ── Notify handlers ──────────────────────────────────────────────────────────
     if (this.handlers.length === 0) return;
 
@@ -358,7 +417,7 @@ export class PageContextWatcher {
       finalContext,
       changedFields,
       at: new Date().toISOString(),
-      artifacts: { screenshotPath, contextPath, domPath }
+      artifacts: { contextPath, domPath }
     };
 
     for (const handler of this.handlers) {
