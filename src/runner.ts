@@ -18,6 +18,7 @@ import { buildXrayExecutionImportPayload } from "./integrations/xray/uploadMappe
 import { detectBlockedState } from "./detectors/detectBlockedState.js";
 import { detectHumanVerification } from "./detectors/detectHumanVerification.js";
 import { handleManualVerificationPause } from "./helpers/handleManualVerificationPause.js";
+import { generatePlaywrightScript, type StepCodeBlock } from "./codegen/playwrightCodegen.js";
 
 export async function runManualTest(
   testCase: ManualTestCase,
@@ -58,6 +59,8 @@ export async function runManualTest(
   if (testCase.startUrl) {
     await page.goto(testCase.startUrl, { waitUntil: "networkidle" });
   }
+
+  const scriptSteps: StepCodeBlock[] = [];
 
   try {
     for (let i = state.currentStepIndex; i < testCase.steps.length; i++) {
@@ -136,6 +139,7 @@ export async function runManualTest(
         const resolvedActions = await executePlannedActions(page, plan.actions, testCase.dataSet, step.action);
         // Write resolved locators back to cache so the next run skips dynamic discovery
         saveCachedStepPlan(domain, step.action, { ...plan, actions: resolvedActions });
+        scriptSteps.push({ step, actions: resolvedActions });
 
         state.stepResults.push(
           await watcher.captureStep("PASSED", step.expectedResult ?? "Completed", startedAt)
@@ -173,6 +177,7 @@ export async function runManualTest(
           const resolvedActions = await executePlannedActions(page, plan.actions, testCase.dataSet, step.action);
           // Cache the re-planned + resolved actions so this fallback only happens once
           saveCachedStepPlan(domain, step.action, { ...plan, actions: resolvedActions });
+          scriptSteps.push({ step, actions: resolvedActions });
 
           state.stepResults.push(
             await watcher.captureStep("PASSED", step.expectedResult ?? "Completed", startedAt)
@@ -202,6 +207,21 @@ export async function runManualTest(
   } finally {
     watcher.detach();
     if (!env.keepBrowserOpen) await browser.close();
+  }
+
+  // ── Playwright codegen ────────────────────────────────────────────────────────
+  // Generate a self-contained .spec.ts script whenever every step passed.
+  // The script uses the resolved selectors from this run so it can replay
+  // the test directly without LLM involvement.
+  const allPassed =
+    state.stepResults.length === testCase.steps.length &&
+    state.stepResults.every(
+      (r) => r.status === "PASSED" || r.status === "MANUAL_PASSED"
+    );
+
+  if (allPassed && scriptSteps.length > 0) {
+    const scriptPath = path.join(path.resolve("out/scripts"), `${runId}.spec.ts`);
+    generatePlaywrightScript(testCase, scriptSteps, scriptPath);
   }
 
   let pendingUploadPath: string | undefined;
