@@ -76,13 +76,23 @@ Rules:
     • For verifying an INPUT has a value — use the input's selector with currentValue in mind.
     • NEVER set "blind": true on an assert action. If the value to verify is not in the page context,
       use "text:<exact visible text>" as the target — the executor will check page visibility directly.
+    • Be careful with error messages and warning banners:
+        - If the EXPECTED RESULT explicitly says the page should show a validation
+          error or warning (e.g. "field is required", "invalid date", "must not be empty"),
+          then asserting on that error text IS correct — it confirms the step succeeded.
+          Example: { "action": "assert", "target": "text:This field is required", "elementType": "label" }
+        - If the expected result says nothing about an error but the page context already
+          contains error text (a pre-existing banner unrelated to this step), do NOT
+          use that error text as the assert target. Pick a success indicator instead,
+          or skip the assert entirely.
     • NEVER use elementType "input-text" for an assert unless you are asserting on a form input field.
       Use elementType "label" for any read-only displayed text.
 - HOW TO END A STEP — always finish your plan with these two actions in order:
     1. assert  → verify the expected result is visible on the page.
-               Use a specific element from the page context that confirms the step succeeded
-               (e.g. a success message, a new page heading, a field that changed value).
-               If no useful assertion target exists, skip the assert.
+               Use a specific element from the page context that confirms the step SUCCEEDED
+               (e.g. a new page heading, a section label, a success banner, a changed field value).
+               NEVER use error messages or warning text as the assert target — even if they
+               are visible in the page context. If no success indicator exists, skip the assert.
     2. done    → signals the step is complete. ALWAYS include this as the final action.
                No target, no value needed: { "action": "done" }
   Never omit the done action. It tells the runner the step finished successfully.
