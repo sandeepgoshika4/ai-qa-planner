@@ -6,8 +6,7 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "fetch:xray": "tsx src/tools/fetchFromXray.ts",
-    "approve:upload": "tsx src/tools/approvePendingUpload.ts",
-    "generate:steps": "tsx src/tools/generateManualSteps.ts"
+    "approve:upload": "tsx src/tools/approvePendingUpload.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
