@@ -10,6 +10,11 @@ const parseNum = (name: string, fallback: number): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 };
+const parseList = (name: string): string[] => {
+  const v = process.env[name];
+  if (!v) return [];
+  return v.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+};
 
 export const env = {
   headless: parseBool("HEADLESS", false),
@@ -24,6 +29,10 @@ export const env = {
   llmProvider: (process.env.LLM_PROVIDER ?? "openai") as "openai" | "copilot",
   watcherLogging: parseBool("WATCHER_LOGGING", true),
   watcherSettleMs: parseNum("WATCHER_SETTLE_MS", 800),
+  monitoredApiPatterns: parseList("MONITORED_API_PATTERNS"),
+  monitoredApiUrls: parseList("MONITORED_API_URLS"),
+  errorTextPatterns: parseList("ERROR_TEXT_PATTERNS"),
+  errorTextExact: parseList("ERROR_TEXT_EXACT"),
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
   llmProxyUrl: process.env.LLM_PROXY_URL ?? "http://localhost:3100/v1",

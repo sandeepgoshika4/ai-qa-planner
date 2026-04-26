@@ -11,6 +11,7 @@ import { VisualLocator } from "../agents/visualLocator.js";
 import { HumanVerificationRequiredError } from "../errors/humanVerificationError.js";
 import { FatalExecutionError, isFatalError, detectPageError } from "../errors/fatalExecutionError.js";
 import { detectHumanVerification } from "../detectors/detectHumanVerification.js";
+import { PageContextWatcher } from "./pageContextWatcher.js";
 
 /**
  * Wait for the element to be visible, scroll it into the viewport, then highlight it.
@@ -574,7 +575,8 @@ export async function executePlannedActions(
   page: Page,
   actions: PlannedAction[],
   dataSet: Record<string, string>,
-  stepDescription: string = ""
+  stepDescription: string = "",
+  watcher?: PageContextWatcher
 ): Promise<PlannedAction[]> {
   const healer = new ActionHealer();
   const visualLocator = new VisualLocator();
@@ -1136,6 +1138,19 @@ export async function executePlannedActions(
         // Loop continues → re-executes resolved[i] with the healed action
       }
     } // end heal-retry while
+
+    // ── Post-action checks: monitored API failures + page error patterns ─────
+    // Hard-stops the run (FatalExecutionError) on any matched issue. The runner
+    // treats FatalExecutionError as non-recoverable — no heal, no re-plan.
+    if (watcher) {
+      const check = await watcher.checkAfterAction(i, resolved[i]);
+      if (check.hasIssues) {
+        const label = `${resolved[i].action}${resolved[i].target ? ` -> ${resolved[i].target}` : ""}`;
+        throw new FatalExecutionError(
+          `[Halted] Post-action checks failed after "${label}": ${PageContextWatcher.formatIssues(check)}`
+        );
+      }
+    }
 
     // Skip actions that were already handled inline (e.g. autocomplete wait + click)
     while ((resolved[i + 1] as (PlannedAction & { _handled?: boolean }) | undefined)?._handled) {

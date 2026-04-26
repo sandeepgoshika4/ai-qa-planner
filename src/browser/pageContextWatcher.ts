@@ -1,13 +1,49 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import type { Frame, Page } from "playwright";
+import type { ConsoleMessage, Frame, Page, Request, Response } from "playwright";
 import { extractPageContext } from "./extractor.js";
 import type { PageContext } from "../types/pageContext.js";
 import type { ManualTestStep } from "../types/manualTest.js";
 import type { StepResult, StepStatus } from "../types/run.js";
+import type { PlannedAction } from "../types/planner.js";
 import { writeJson } from "../utils/fs.js";
 import { logInfo } from "../utils/logger.js";
 import { env } from "../config/env.js";
+
+// ─── Per-action issue matchers ────────────────────────────────────────────────
+
+export interface NetworkIssue {
+  url: string;
+  status?: number;
+  reason?: string;
+}
+
+export interface ActionCheckResult {
+  hasIssues: boolean;
+  pageErrors: string[];
+  consoleErrors: string[];
+  networkFailures: NetworkIssue[];
+  visibleErrorTexts: string[];
+}
+
+function urlPath(url: string): string {
+  try { return new URL(url).pathname; } catch { return url; }
+}
+
+function matchesMonitoredUrl(url: string): boolean {
+  const p = urlPath(url);
+  if (env.monitoredApiUrls.some((u) => url === u || p === u)) return true;
+  if (env.monitoredApiPatterns.some((pat) => url.includes(pat))) return true;
+  return false;
+}
+
+function matchExactError(text: string): string | null {
+  return env.errorTextExact.find((e) => text === e) ?? null;
+}
+
+function matchPatternError(text: string): string | null {
+  return env.errorTextPatterns.find((p) => text.includes(p)) ?? null;
+}
 
 const log = (msg: string): void => { if (env.watcherLogging) logInfo(msg); };
 
@@ -143,9 +179,18 @@ export class PageContextWatcher {
   private attached = false;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Per-action event buffers — drained by checkAfterAction()
+  private pageErrors: string[] = [];
+  private consoleErrors: string[] = [];
+  private networkFailures: NetworkIssue[] = [];
+
   // Bound references kept so the exact same listener can be removed later.
   private readonly onFrameNavigated: (frame: Frame) => void;
   private readonly onLoad: () => void;
+  private readonly onPageError: (err: Error) => void;
+  private readonly onConsole: (msg: ConsoleMessage) => void;
+  private readonly onResponse: (res: Response) => void;
+  private readonly onRequestFailed: (req: Request) => void;
 
   constructor(page: Page, artifactDir: string) {
     this.page = page;
@@ -158,6 +203,27 @@ export class PageContextWatcher {
 
     this.onLoad = () => {
       this.scheduleSettle();
+    };
+
+    this.onPageError = (err: Error) => {
+      this.pageErrors.push(err.message);
+    };
+
+    this.onConsole = (msg: ConsoleMessage) => {
+      if (msg.type() === "error") this.consoleErrors.push(msg.text());
+    };
+
+    this.onResponse = (res: Response) => {
+      const url = res.url();
+      if (!matchesMonitoredUrl(url)) return;
+      const status = res.status();
+      if (status >= 400) this.networkFailures.push({ url, status });
+    };
+
+    this.onRequestFailed = (req: Request) => {
+      const url = req.url();
+      if (!matchesMonitoredUrl(url)) return;
+      this.networkFailures.push({ url, reason: req.failure()?.errorText ?? "request failed" });
     };
   }
 
@@ -240,6 +306,10 @@ export class PageContextWatcher {
 
     this.page.on("framenavigated", this.onFrameNavigated);
     this.page.on("load", this.onLoad);
+    this.page.on("pageerror", this.onPageError);
+    this.page.on("console", this.onConsole);
+    this.page.on("response", this.onResponse);
+    this.page.on("requestfailed", this.onRequestFailed);
 
     log("[PageContextWatcher] Attached. Will emit once per step after page settles.");
   }
@@ -250,6 +320,10 @@ export class PageContextWatcher {
     this.clearDebounce();
     this.page.off("framenavigated", this.onFrameNavigated);
     this.page.off("load", this.onLoad);
+    this.page.off("pageerror", this.onPageError);
+    this.page.off("console", this.onConsole);
+    this.page.off("response", this.onResponse);
+    this.page.off("requestfailed", this.onRequestFailed);
     this.attached = false;
     log("[PageContextWatcher] Detached.");
   }
@@ -257,6 +331,83 @@ export class PageContextWatcher {
   /** Returns the most recently captured {@link PageContext}. */
   getLastContext(): PageContext | null {
     return this.lastContext;
+  }
+
+  /**
+   * Probe the page after a single action has finished. Drains buffered
+   * pageerror / console.error / monitored-network failures and scans the
+   * visible DOM for configured error-text matches. Buffers are cleared
+   * regardless of outcome so the next action starts clean.
+   *
+   * Returns a result with `hasIssues=true` only if at least one configured
+   * matcher fired. Unconfigured categories never trip the flag.
+   */
+  async checkAfterAction(_actionIndex: number, _action: PlannedAction): Promise<ActionCheckResult> {
+    const networkFailures = this.networkFailures.splice(0);
+    const consoleRaw = this.consoleErrors.splice(0);
+    const pageErrorsRaw = this.pageErrors.splice(0);
+
+    // Console & pageerror are only "issues" when an error-text matcher hits —
+    // otherwise noisy SPAs would halt every action. Strictly opt-in.
+    const matchersConfigured =
+      env.errorTextExact.length > 0 || env.errorTextPatterns.length > 0;
+
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+
+    if (matchersConfigured) {
+      for (const t of consoleRaw) {
+        if (matchExactError(t) || matchPatternError(t)) consoleErrors.push(t);
+      }
+      for (const t of pageErrorsRaw) {
+        if (matchExactError(t) || matchPatternError(t)) pageErrors.push(t);
+      }
+    }
+
+    const visibleErrorTexts: string[] = [];
+    if (matchersConfigured) {
+      for (const exact of env.errorTextExact) {
+        const found = await this.page
+          .getByText(exact, { exact: true })
+          .first()
+          .isVisible()
+          .catch(() => false);
+        if (found) visibleErrorTexts.push(exact);
+      }
+      for (const pat of env.errorTextPatterns) {
+        const found = await this.page
+          .getByText(pat, { exact: false })
+          .first()
+          .isVisible()
+          .catch(() => false);
+        if (found) visibleErrorTexts.push(pat);
+      }
+    }
+
+    const hasIssues =
+      networkFailures.length > 0 ||
+      consoleErrors.length > 0 ||
+      pageErrors.length > 0 ||
+      visibleErrorTexts.length > 0;
+
+    return { hasIssues, pageErrors, consoleErrors, networkFailures, visibleErrorTexts };
+  }
+
+  /** Format an {@link ActionCheckResult} into a single human-readable line. */
+  static formatIssues(r: ActionCheckResult): string {
+    const parts: string[] = [];
+    if (r.networkFailures.length > 0) {
+      parts.push(
+        "API failures: " +
+          r.networkFailures
+            .map((f) => `${f.url}${f.status ? ` [${f.status}]` : ""}${f.reason ? ` (${f.reason})` : ""}`)
+            .join("; ")
+      );
+    }
+    if (r.visibleErrorTexts.length > 0) parts.push(`visible error text: ${r.visibleErrorTexts.join("; ")}`);
+    if (r.pageErrors.length > 0) parts.push(`page errors: ${r.pageErrors.join("; ")}`);
+    if (r.consoleErrors.length > 0) parts.push(`console errors: ${r.consoleErrors.join("; ")}`);
+    return parts.join(" | ");
   }
 
   /**
@@ -269,7 +420,7 @@ export class PageContextWatcher {
    * Returns the stable {@link PageContext} once the page is ready.
    * Never throws — falls back to whatever state the page is in if timeouts hit.
    */
-  async waitForSettle(timeoutMs = 20000): Promise<PageContext> {
+  async waitForSettle(timeoutMs = 10000): Promise<PageContext> {
     // 1. Wait for network to go idle
     await this.page.waitForLoadState("networkidle", { timeout: timeoutMs }).catch(() => {});
 
