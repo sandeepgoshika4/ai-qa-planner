@@ -31,6 +31,44 @@ function stripQuery(url: string): string {
 }
 
 /**
+ * Check whether `obj` contains a field at the given dot-path (e.g. "data.confirmation").
+ * Treats present-but-null and present-but-undefined as MISSING — the assertion
+ * is only satisfied when the path resolves to a defined, non-null value.
+ * Single-segment paths also do a recursive descent so the planner can target a
+ * leaf key without knowing its full structure.
+ */
+function hasField(obj: unknown, path: string): boolean {
+  if (obj == null || path.length === 0) return false;
+
+  if (path.includes(".")) {
+    const parts = path.split(".");
+    let cur: unknown = obj;
+    for (const p of parts) {
+      if (cur == null || typeof cur !== "object") return false;
+      cur = (cur as Record<string, unknown>)[p];
+    }
+    return cur !== undefined && cur !== null;
+  }
+
+  // Single key — search recursively
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [obj];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node == null || typeof node !== "object" || seen.has(node)) continue;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const v of node) stack.push(v);
+      continue;
+    }
+    const rec = node as Record<string, unknown>;
+    if (path in rec && rec[path] !== undefined && rec[path] !== null) return true;
+    for (const v of Object.values(rec)) stack.push(v);
+  }
+  return false;
+}
+
+/**
  * After a click or press, detect whether the page is navigating (URL changed)
  * and, if so, wait for the new page to fully load.
  *
@@ -1008,6 +1046,40 @@ export async function executePlannedActions(
         await assertLoc.waitFor({ state: "visible", timeout: 8000 });
         await scrollAndHighlight(assertLoc);
         await ensureNoHumanVerification(activePage);
+        break;
+      }
+
+      case "assertApiResponse": {
+        if (!action.target) throw new Error("assertApiResponse missing target (API url pattern)");
+        if (!watcher) throw new Error("assertApiResponse requires a watcher — none provided");
+
+        const fields = (action.value ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+
+        const captured = await watcher.waitForApiResponse(action.target);
+        if (!captured) {
+          throw new FatalExecutionError(
+            `[assertApiResponse] No response captured for API matching "${action.target}" within timeout.`
+          );
+        }
+
+        const missing: string[] = [];
+        for (const path of fields) {
+          if (!hasField(captured.body, path)) missing.push(path);
+        }
+        if (missing.length > 0) {
+          throw new FatalExecutionError(
+            `[assertApiResponse] API "${captured.url}" [${captured.status}] missing field(s): ${missing.join(", ")}. ` +
+            `Body: ${JSON.stringify(captured.body).slice(0, 500)}`
+          );
+        }
+
+        logInfo(
+          `[Executor] assertApiResponse passed — "${captured.url}" [${captured.status}] ` +
+          `contains: ${fields.join(", ")}`
+        );
         break;
       }
 

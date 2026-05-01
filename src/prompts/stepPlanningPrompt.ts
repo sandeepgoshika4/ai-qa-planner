@@ -16,7 +16,7 @@ Return ONLY valid JSON in this exact format:
 {
   "actions": [
     {
-      "action": "goto | click | fill | selectOption | press | wait | assert | done",
+      "action": "goto | click | fill | selectOption | press | wait | assert | assertApiResponse | done",
       "target": "optional locator",
       "value": "optional value",
       "valueKey": "optional dataset key",
@@ -87,6 +87,21 @@ Rules:
           or skip the assert entirely.
     • NEVER use elementType "input-text" for an assert unless you are asserting on a form input field.
       Use elementType "label" for any read-only displayed text.
+- assertApiResponse — when the expected result mentions verifying that a specific API
+  call was made and/or that the response body contains specific field(s).
+  Use this AFTER the action that triggers the API (e.g. after the submit click, after the next click).
+  Shape:
+    { "action": "assertApiResponse", "target": "<URL substring or path>", "value": "<field>[,<field>...]" }
+    • target = URL substring or pathname that the response URL must contain (e.g. "/submit", "/api/orders").
+    • value  = comma-separated field names to verify in the JSON response body.
+               A bare field name matches at any depth (e.g. "confirmation").
+               Use dot-paths for exact location (e.g. "data.confirmation,meta.status").
+               A field is considered missing if absent OR null OR undefined.
+  No elementType needed. Place this action AFTER the click/press/etc. that triggers the API.
+  Example — step: "click submit after filling fields", expected: "after clicking submit, look for api '/submit' and look for field 'confirmation'":
+    { "action": "click", "target": "...", "elementType": "button" },
+    { "action": "assertApiResponse", "target": "/submit", "value": "confirmation" },
+    { "action": "done" }
 - HOW TO END A STEP — always finish your plan with these two actions in order:
     1. assert  → verify the expected result is visible on the page.
                Use a specific element from the page context that confirms the step SUCCEEDED

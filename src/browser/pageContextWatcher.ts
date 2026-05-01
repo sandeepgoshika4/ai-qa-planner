@@ -26,6 +26,17 @@ export interface ActionCheckResult {
   visibleErrorTexts: string[];
 }
 
+/** Captured API response with parsed JSON body — used by assertApiResponse. */
+export interface CapturedApiResponse {
+  url: string;
+  status: number;
+  body: unknown;
+  at: number;
+}
+
+/** Max number of recent JSON responses kept in memory per step. */
+const API_RESPONSE_BUFFER_LIMIT = 50;
+
 function urlPath(url: string): string {
   try { return new URL(url).pathname; } catch { return url; }
 }
@@ -184,6 +195,10 @@ export class PageContextWatcher {
   private consoleErrors: string[] = [];
   private networkFailures: NetworkIssue[] = [];
 
+  // Per-step ring buffer of recent JSON API responses — used by assertApiResponse.
+  // Cleared at setStep() so each step inspects only its own traffic.
+  private apiResponses: CapturedApiResponse[] = [];
+
   // Bound references kept so the exact same listener can be removed later.
   private readonly onFrameNavigated: (frame: Frame) => void;
   private readonly onLoad: () => void;
@@ -215,9 +230,27 @@ export class PageContextWatcher {
 
     this.onResponse = (res: Response) => {
       const url = res.url();
-      if (!matchesMonitoredUrl(url)) return;
       const status = res.status();
-      if (status >= 400) this.networkFailures.push({ url, status });
+
+      // Branch 1: monitored failure tracking (matches checkAfterAction)
+      if (matchesMonitoredUrl(url) && status >= 400) {
+        this.networkFailures.push({ url, status });
+      }
+
+      // Branch 2: JSON body capture for assertApiResponse — best-effort, async,
+      // never throws. Capture for ALL JSON responses so the planner can target
+      // any URL pattern without pre-config.
+      const ct = res.headers()["content-type"] ?? "";
+      if (!ct.includes("json")) return;
+      void res
+        .json()
+        .then((body) => {
+          this.apiResponses.push({ url, status, body, at: Date.now() });
+          if (this.apiResponses.length > API_RESPONSE_BUFFER_LIMIT) {
+            this.apiResponses.splice(0, this.apiResponses.length - API_RESPONSE_BUFFER_LIMIT);
+          }
+        })
+        .catch(() => { /* non-JSON or unreadable — ignore */ });
     };
 
     this.onRequestFailed = (req: Request) => {
@@ -247,6 +280,8 @@ export class PageContextWatcher {
     // Snapshot the page state right now so we can diff against it once the
     // page has settled after this step's actions complete.
     this.stepStartContext = this.lastContext;
+    // Reset per-step API response buffer so assertApiResponse only sees this step's traffic
+    this.apiResponses = [];
     log(`[PageContextWatcher] Watching step ${index + 1}: "${step.action}"`);
   }
 
@@ -391,6 +426,24 @@ export class PageContextWatcher {
       visibleErrorTexts.length > 0;
 
     return { hasIssues, pageErrors, consoleErrors, networkFailures, visibleErrorTexts };
+  }
+
+  /**
+   * Wait up to `timeoutMs` for an API response whose URL contains `urlPattern`
+   * (substring or pathname match) to appear in the per-step buffer.
+   * Returns the most recent matching response, or null on timeout.
+   */
+  async waitForApiResponse(urlPattern: string, timeoutMs = 8000): Promise<CapturedApiResponse | null> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const match = [...this.apiResponses].reverse().find((r) => {
+        const p = urlPath(r.url);
+        return r.url.includes(urlPattern) || p.includes(urlPattern) || p === urlPattern;
+      });
+      if (match) return match;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return null;
   }
 
   /** Format an {@link ActionCheckResult} into a single human-readable line. */
