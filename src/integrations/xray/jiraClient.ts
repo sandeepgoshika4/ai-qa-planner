@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { env } from "../../config/env.js";
 import { JiraIssueFields } from "../../types/jiraFields.js";
 
@@ -105,5 +107,107 @@ export class JiraClient {
       environment: fields.environment || ""
     };
     return mapped;
+  }
+
+  /**
+   * Create a new Test Execution issue in the given project.
+   * Returns the issue key (e.g. "FEWA-12345").
+   */
+  async createTestExecution(
+    projectKey: string,
+    summary: string,
+    description?: string
+  ): Promise<{ key: string }> {
+    if (!env.jiraBaseUrl) throw new Error("JIRA_BASE_URL is missing");
+    const url = `${env.jiraBaseUrl}/rest/api/2/issue`;
+
+    const body = {
+      fields: {
+        project: { key: projectKey },
+        summary,
+        description: description ?? "",
+        issuetype: { name: "Test Execution" }
+      }
+    };
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: this.authHeader()
+      },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      throw new Error(`Create Test Execution failed: ${response.status} ${await response.text()}`);
+    }
+    const data = (await response.json()) as { key: string };
+    return { key: data.key };
+  }
+
+  /**
+   * Link two issues using the standard Jira issueLink endpoint.
+   * Default link type "Tests" matches Xray-enabled Jira instances; falls back
+   * to "Relates" if the link type is unknown to the server.
+   */
+  async addIssueLink(
+    fromKey: string,
+    toKey: string,
+    linkType: string = "Tests"
+  ): Promise<void> {
+    if (!env.jiraBaseUrl) throw new Error("JIRA_BASE_URL is missing");
+    const url = `${env.jiraBaseUrl}/rest/api/2/issueLink`;
+
+    const send = async (type: string): Promise<Response> =>
+      fetch(url, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: this.authHeader()
+        },
+        body: JSON.stringify({
+          type: { name: type },
+          inwardIssue: { key: toKey },
+          outwardIssue: { key: fromKey }
+        })
+      });
+
+    let response = await send(linkType);
+    if (!response.ok && linkType !== "Relates") {
+      // Retry with the universally-available "Relates" link type
+      response = await send("Relates");
+    }
+    if (!response.ok) {
+      throw new Error(`Issue link failed: ${response.status} ${await response.text()}`);
+    }
+  }
+
+  /**
+   * Attach a file from disk to a Jira issue. Uses multipart/form-data and the
+   * required `X-Atlassian-Token: no-check` header.
+   */
+  async attachFile(issueKey: string, filePath: string): Promise<void> {
+    if (!env.jiraBaseUrl) throw new Error("JIRA_BASE_URL is missing");
+    const url = `${env.jiraBaseUrl}/rest/api/2/issue/${encodeURIComponent(issueKey)}/attachments`;
+
+    const buf = await fs.readFile(filePath);
+    const blob = new Blob([buf]);
+    const form = new FormData();
+    form.append("file", blob, path.basename(filePath));
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: this.authHeader(),
+        "X-Atlassian-Token": "no-check"
+      },
+      body: form
+    });
+    if (!response.ok) {
+      throw new Error(`Attach file failed: ${response.status} ${await response.text()}`);
+    }
   }
 }

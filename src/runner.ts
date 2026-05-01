@@ -15,6 +15,7 @@ import { prompt } from "./utils/cli.js";
 import { logInfo, logWarn, logError } from "./utils/logger.js";
 import { FatalExecutionError } from "./errors/fatalExecutionError.js";
 import { buildXrayExecutionImportPayload } from "./integrations/xray/uploadMapper.js";
+import { JiraClient } from "./integrations/xray/jiraClient.js";
 import { detectBlockedState } from "./detectors/detectBlockedState.js";
 import { detectHumanVerification } from "./detectors/detectHumanVerification.js";
 import { handleManualVerificationPause } from "./helpers/handleManualVerificationPause.js";
@@ -222,6 +223,47 @@ export async function runManualTest(
   if (allPassed && scriptSteps.length > 0) {
     const scriptPath = path.join(path.resolve("out/scripts"), `${runId}.spec.ts`);
     generatePlaywrightScript(testCase, scriptSteps, scriptPath);
+  }
+
+  // ── Jira Test Execution upload ────────────────────────────────────────────
+  // When a Jira-sourced test passes end-to-end, create a new Test Execution
+  // issue, link it to the source test, and upload all step screenshots.
+  // Failures here never bubble up — the run already succeeded.
+  if (allPassed && testCase.source === "jira" && testCase.testCaseKey) {
+    const projectKey = testCase.testCaseKey.split("-")[0];
+    const summary = `Automated execution: ${testCase.testCaseKey} — ${testCase.testName}`;
+    const description =
+      `Automated Test Execution for ${testCase.testCaseKey}.\n` +
+      `Run ID: ${state.runId}\n` +
+      `Started: ${state.startedAt}\n` +
+      `Steps: ${state.stepResults.length} (all passed)`;
+
+    try {
+      const client = new JiraClient();
+      const exec = await client.createTestExecution(projectKey, summary, description);
+      logInfo(`Created Jira Test Execution: ${exec.key}`);
+
+      try {
+        await client.addIssueLink(exec.key, testCase.testCaseKey, "Tests");
+        logInfo(`Linked ${exec.key} → ${testCase.testCaseKey}`);
+      } catch (linkErr) {
+        logWarn(`Could not link execution to source test: ${(linkErr as Error).message}`);
+      }
+
+      let uploaded = 0;
+      for (const r of state.stepResults) {
+        if (!r.screenshotPath) continue;
+        try {
+          await client.attachFile(exec.key, r.screenshotPath);
+          uploaded++;
+        } catch (attachErr) {
+          logWarn(`Failed to attach ${r.screenshotPath}: ${(attachErr as Error).message}`);
+        }
+      }
+      logInfo(`Uploaded ${uploaded}/${state.stepResults.length} screenshots to ${exec.key}`);
+    } catch (e) {
+      logWarn(`Jira Test Execution upload failed: ${(e as Error).message}`);
+    }
   }
 
   let pendingUploadPath: string | undefined;
