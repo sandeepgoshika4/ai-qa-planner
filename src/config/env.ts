@@ -37,6 +37,6 @@ export const env = {
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
   llmProxyUrl: process.env.LLM_PROXY_URL ?? "http://localhost:3100/v1",
   jiraBaseUrl: process.env.JIRA_BASE_URL ?? "",
-  jiraEmail: process.env.JIRA_EMAIL ?? "",
-  jiraApiToken: process.env.JIRA_API_TOKEN ?? ""
+  jiraUsername: process.env.JIRA_USERNAME ?? "",
+  jiraPassword: process.env.JIRA_PASSWORD ?? ""
 };

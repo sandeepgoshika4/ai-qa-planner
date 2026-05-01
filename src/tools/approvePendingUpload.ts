@@ -4,8 +4,8 @@ import { logInfo } from "../utils/logger.js";
 
 async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
-  const file = args.approvePending ?? args.rejectPending;
-  if (!file) throw new Error("Usage: npm run approve:upload -- <pending-file> --approve | --reject");
+  const file = args.rejectPending;
+  if (!file) throw new Error("Usage: npm run approve:upload -- <pending-file> --reject");
 
   const record = loadPendingUpload(file);
   if (args.rejectPending) {
@@ -16,16 +16,6 @@ async function main(): Promise<void> {
     logInfo("Rejected.");
     return;
   }
-  if (args.approvePending) {
-    const client = new XrayClient();
-    const response = await client.uploadExecutionResults(record.uploadPayload);
-    record.approved = true;
-    record.rejected = false;
-    record.note = `Uploaded. Response: ${JSON.stringify(response)}`;
-    savePendingUpload(record);
-    logInfo("Approved and uploaded.");
-    return;
-  }
-  throw new Error("Provide --approve or --reject");
+  throw new Error("Provide --reject");
 }
 main().catch((e) => { console.error(e); process.exit(1); });

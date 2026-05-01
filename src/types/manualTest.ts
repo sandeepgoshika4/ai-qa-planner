@@ -12,6 +12,6 @@ export interface ManualTestCase {
   startUrl?: string;
   dataSet: Record<string, string>;
   steps: ManualTestStep[];
-  source: "json" | "xray";
+  source: "json" | "xray" | "jira";
   rawSource?: unknown;
 }
