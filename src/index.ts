@@ -1,7 +1,5 @@
 import { loadManualTestFile } from "./config/manualTestLoader.js";
 import { parseCliArgs } from "./config/cliArgs.js";
-import { XrayClient } from "./integrations/xray/xrayClient.js";
-import { mapXrayTestsToManualCases } from "./integrations/xray/xrayMapper.js";
 import { runManualTest } from "./runner.js";
 import { loadRunState } from "./storage/runStateStore.js";
 import { logError, logInfo } from "./utils/logger.js";
@@ -17,12 +15,8 @@ async function main(): Promise<void> {
   let cases = [];
   if (args.file) {
     cases = [loadManualTestFile(args.file)];
-  } else if (args.xrayIssue || args.xrayJql) {
-    const client = new XrayClient();
-    const raw = args.xrayIssue ? await client.fetchTestsByIssueKey(args.xrayIssue) : await client.fetchTestsByJql(args.xrayJql!);
-    cases = mapXrayTestsToManualCases(raw);
   } else {
-    throw new Error("Pass --file, --xray-issue, --xray-jql, or --resume");
+    throw new Error("Pass --file, --resume");
   }
 
   for (const testCase of cases) {

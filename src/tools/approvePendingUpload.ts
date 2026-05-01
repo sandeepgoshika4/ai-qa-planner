@@ -1,5 +1,4 @@
 import { parseCliArgs } from "../config/cliArgs.js";
-import { XrayClient } from "../integrations/xray/xrayClient.js";
 import { loadPendingUpload, savePendingUpload } from "../storage/pendingUploadStore.js";
 import { logInfo } from "../utils/logger.js";
 

@@ -36,10 +36,6 @@ export const env = {
   openAiApiKey: process.env.OPENAI_API_KEY ?? "",
   openAiModel: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
   llmProxyUrl: process.env.LLM_PROXY_URL ?? "http://localhost:3100/v1",
-  xrayClientId: process.env.XRAY_CLIENT_ID ?? "",
-  xrayClientSecret: process.env.XRAY_CLIENT_SECRET ?? "",
-  xrayBaseUrl: process.env.XRAY_BASE_URL ?? "https://xray.cloud.getxray.app/api/v2",
-  xrayGraphqlUrl: process.env.XRAY_GRAPHQL_URL ?? "https://xray.cloud.getxray.app/api/v2/graphql",
   jiraBaseUrl: process.env.JIRA_BASE_URL ?? "",
   jiraEmail: process.env.JIRA_EMAIL ?? "",
   jiraApiToken: process.env.JIRA_API_TOKEN ?? ""
