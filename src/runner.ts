@@ -24,10 +24,11 @@ import { generatePlaywrightScript, type StepCodeBlock } from "./codegen/playwrig
 export async function runManualTest(
   testCase: ManualTestCase,
   resumeState?: RunState,
-  options?: { auto?: boolean; approve?: boolean }
+  options?: { auto?: boolean; approve?: boolean; video?: boolean }
 ): Promise<{ runState: RunState; pendingUploadPath?: string }> {
   const autoMode = options?.auto ?? false;
   const approveMode = options?.approve ?? false;
+  const videoMode = options?.video ?? false;
   const planner = new OpenAiPlanner();
   const runId = resumeState?.runId ?? `${Date.now()}-${slugify(testCase.testName)}`;
   const artifactDir = ensureDir(path.resolve("out/runs", runId));
@@ -42,8 +43,14 @@ export async function runManualTest(
   };
 
   const browser = await chromium.launch({ headless: env.headless, slowMo: env.slowMo });
-  const context = await browser.newContext();
+  const context = await browser.newContext(
+    videoMode
+      ? { recordVideo: { dir: artifactDir, size: { width: 1280, height: 720 } } }
+      : {}
+  );
   const page = await context.newPage();
+  // Captured BEFORE close so we can finalize/rename the .webm afterwards.
+  const video = videoMode ? page.video() : null;
 
   // The watcher owns all artifact generation (screenshots, DOM, context JSON)
   // and fires callbacks on every page-context change during step execution.
@@ -208,7 +215,26 @@ export async function runManualTest(
     }
   } finally {
     watcher.detach();
+    // Video is finalized only after the context closes — must close even if
+    // KEEP_BROWSER_OPEN is set, otherwise the .webm stays empty/unwritten.
+    if (videoMode) {
+      try { await context.close(); } catch { /* ignore */ }
+    }
     if (!env.keepBrowserOpen) await browser.close();
+  }
+
+  // ── Finalize video ───────────────────────────────────────────────────────────
+  let videoPath: string | undefined;
+  if (video) {
+    try {
+      const stablePath = path.join(artifactDir, `${runId}.webm`);
+      await video.saveAs(stablePath);
+      await video.delete();
+      videoPath = stablePath;
+      logInfo(`Video saved: ${videoPath}`);
+    } catch (e) {
+      logWarn(`Video save failed: ${(e as Error).message}`);
+    }
   }
 
   // ── Playwright codegen ────────────────────────────────────────────────────────
@@ -262,6 +288,15 @@ export async function runManualTest(
         }
       }
       logInfo(`Uploaded ${uploaded}/${state.stepResults.length} screenshots to ${exec.key}`);
+
+      if (videoPath) {
+        try {
+          await client.attachFile(exec.key, videoPath);
+          logInfo(`Uploaded video to ${exec.key}`);
+        } catch (videoErr) {
+          logWarn(`Video upload failed: ${(videoErr as Error).message}`);
+        }
+      }
     } catch (e) {
       logWarn(`Jira Test Execution upload failed: ${(e as Error).message}`);
     }

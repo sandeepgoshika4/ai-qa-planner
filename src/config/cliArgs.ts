@@ -9,6 +9,8 @@ export interface CliOptions {
   auto?: boolean;
   /** When true, upload a Jira Test Execution after the run passes. */
   approve?: boolean;
+  /** When true, record a Playwright video of the test execution. */
+  video?: boolean;
 }
 export function parseCliArgs(argv: string[]): CliOptions {
   const out: CliOptions = {};
@@ -20,6 +22,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     if (arg === "--approve") out.approve = true;
     if (arg === "--reject") out.rejectPending = next;
     if (arg === "--auto") out.auto = true;
+    if (arg === "--video") out.video = true;
     if (!arg.startsWith("--") && !out.recordingFile) out.recordingFile = arg;
   }
   return out;
