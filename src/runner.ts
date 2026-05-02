@@ -24,9 +24,10 @@ import { generatePlaywrightScript, type StepCodeBlock } from "./codegen/playwrig
 export async function runManualTest(
   testCase: ManualTestCase,
   resumeState?: RunState,
-  options?: { auto?: boolean }
+  options?: { auto?: boolean; approve?: boolean }
 ): Promise<{ runState: RunState; pendingUploadPath?: string }> {
   const autoMode = options?.auto ?? false;
+  const approveMode = options?.approve ?? false;
   const planner = new OpenAiPlanner();
   const runId = resumeState?.runId ?? `${Date.now()}-${slugify(testCase.testName)}`;
   const artifactDir = ensureDir(path.resolve("out/runs", runId));
@@ -229,7 +230,7 @@ export async function runManualTest(
   // When a Jira-sourced test passes end-to-end, create a new Test Execution
   // issue, link it to the source test, and upload all step screenshots.
   // Failures here never bubble up — the run already succeeded.
-  if (allPassed && testCase.source === "jira" && testCase.testCaseKey) {
+  if (approveMode && allPassed && testCase.source === "jira" && testCase.testCaseKey) {
     const projectKey = testCase.testCaseKey.split("-")[0];
     const summary = `Automated execution: ${testCase.testCaseKey} — ${testCase.testName}`;
     const description =
