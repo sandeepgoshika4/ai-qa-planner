@@ -6,7 +6,6 @@ import type { PageContext } from "../types/pageContext.js";
 import type { ManualTestStep } from "../types/manualTest.js";
 import type { StepResult, StepStatus } from "../types/run.js";
 import type { PlannedAction } from "../types/planner.js";
-import { writeJson } from "../utils/fs.js";
 import { logInfo } from "../utils/logger.js";
 import { env } from "../config/env.js";
 
@@ -147,7 +146,7 @@ export interface PageContextChange {
   /** ISO-8601 timestamp of when the settled snapshot was taken. */
   at: string;
   /** Artifact files saved for this change. */
-  artifacts: { contextPath: string; domPath: string };
+  artifacts: { domPath: string };
 }
 
 /** Callback invoked once per step after the page has settled. */
@@ -289,8 +288,8 @@ export class PageContextWatcher {
 
   /**
    * Take a final snapshot of the current page, write the canonical step
-   * artifacts (`step-N.png`, `step-N.json`, `step-N.html`), and return a
-   * fully-populated `StepResult`.
+   * artifacts (`step-N.png`, `step-N.html`), and return a fully-populated
+   * `StepResult`.
    */
   async captureStep(
     status: StepStatus,
@@ -303,11 +302,9 @@ export class PageContextWatcher {
     const context = await extractPageContext(this.page);
     const base = path.join(this.artifactDir, `step-${index + 1}`);
 
-    const contextPath = `${base}.json`;
     const domPath = `${base}.html`;
     const screenshotPath = `${base}.png`;
 
-    writeJson(contextPath, context);
     await fs.writeFile(domPath, context.dom, "utf-8");
     await takeFullPageScreenshot(this.page, screenshotPath);
 
@@ -321,8 +318,7 @@ export class PageContextWatcher {
       finishedAt: new Date().toISOString(),
       comment,
       screenshotPath,
-      domPath,
-      contextPath
+      domPath
     };
   }
 
@@ -560,11 +556,9 @@ export class PageContextWatcher {
     // ── Save artifacts ───────────────────────────────────────────────────────────
     const { index, step } = this.currentStep;
     const base = path.join(this.artifactDir, `step-${index + 1}-settled`);
-    const contextPath = `${base}.json`;
     const domPath = `${base}.html`;
 
     try {
-      writeJson(contextPath, finalContext);
       await fs.writeFile(domPath, finalContext.dom, "utf-8");
     } catch {
       // Artifact save failure must never interrupt execution.
@@ -621,7 +615,7 @@ export class PageContextWatcher {
       finalContext,
       changedFields,
       at: new Date().toISOString(),
-      artifacts: { contextPath, domPath }
+      artifacts: { domPath }
     };
 
     for (const handler of this.handlers) {

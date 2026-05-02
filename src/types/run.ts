@@ -11,7 +11,6 @@ export interface StepResult {
   comment?: string;
   screenshotPath?: string;
   domPath?: string;
-  contextPath?: string;
 }
 
 export interface RunState {
